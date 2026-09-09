@@ -1,4 +1,5 @@
 import os
+import urllib.parse
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import field_validator
 
@@ -43,6 +44,8 @@ class Settings(BaseSettings):
     def get_database_url(self) -> str:
         if self.database_url:
             return self.database_url
-        return f"postgresql+psycopg://{self.postgres_user}:{self.postgres_password}@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        safe_pass = urllib.parse.quote_plus(self.postgres_password)
+        safe_user = urllib.parse.quote_plus(self.postgres_user)
+        return f"postgresql+psycopg://{safe_user}:{safe_pass}@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
 
 settings = Settings()

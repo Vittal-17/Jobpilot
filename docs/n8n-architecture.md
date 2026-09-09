@@ -99,8 +99,8 @@ n8n requires durable state across restarts for:
 
 ### Workflow 1: JP — FastAPI Health Check
 - **Trigger**: Manual
-- **Node**: HTTP Request (`GET http://fastapi:8000/health`)
-- **Validation**: IF node checks `status == "ok"`
+- **Node**: HTTP Request (`GET http://fastapi:8000/internal/health`)
+- **Validation**: Code node validates `status === "ok"`
 - **Purpose**: Validates internal network routing and basic service liveliness without touching quotas or providers.
 
 ### Workflow 2: JP — Daily Job Discovery

@@ -1,4 +1,28 @@
 services:
+
+  fastapi:
+    image: python:3.12-alpine
+    restart: always
+    environment:
+      - POSTGRES_HOST=db
+      - POSTGRES_USER=${POSTGRES_USER:-jobpilot}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD?POSTGRES_PASSWORD must be set}
+      - POSTGRES_DB=${POSTGRES_DB:-jobpilot}
+      - API_SECRET_KEY=${API_SECRET_KEY?API_SECRET_KEY must be set}
+      - ADZUNA_APP_ID=${ADZUNA_APP_ID:-}
+      - ADZUNA_APP_KEY=${ADZUNA_APP_KEY:-}
+      - JOOBLE_API_KEY=${JOOBLE_API_KEY:-}
+    volumes:
+      - ./backend:/app
+    working_dir: /app
+    ports:
+      - "127.0.0.1:8000:8000"
+    command: >
+      sh -c "pip install --no-cache-dir -r requirements.txt && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
   db:
     image: postgres:16-alpine
     restart: always

@@ -1,3 +1,6 @@
+from app.api.endpoints.ingestion import verify_api_key
+from fastapi import Depends
+
 from fastapi import FastAPI
 from app.api.endpoints import ingestion
 
@@ -11,4 +14,8 @@ app.include_router(ingestion.router, prefix="/ingestion", tags=["ingestion"])
 
 @app.get("/health")
 def health_check() -> dict[str, str]:
+    return {"status": "ok"}
+
+@app.get("/internal/health", dependencies=[Depends(verify_api_key)])
+def internal_health_check() -> dict[str, str]:
     return {"status": "ok"}
