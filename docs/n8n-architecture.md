@@ -112,11 +112,11 @@ n8n requires durable state across restarts for:
 
 ---
 
-## PART 12 & PART 13 — SEARCH PLAN & ORCHESTRATION
+## PART 12 & PART 13 — SEARCH PLAN & ORCHESTRATION (FUTURE DESIGN)
 
-- **Search Plan**: Configured in an n8n `Set` node or external JSON file read by n8n. Focuses on: "Junior Python Developer", "Django", "RAG / AI", "Bangalore".
-- **Orchestration**: Adzuna executes up to 10 queries. Jooble executes 1 highly targeted query.
-- **Quota Authority**: n8n *requests* the search. FastAPI *allows or denies* it. If n8n attempts 11 Adzuna searches, FastAPI returns 429 on the 11th. n8n catches this 429 and exits the loop cleanly.
+- **Search Plan**: Configured in an n8n workflow mapping coverage models.
+- **Orchestration**: In future phases (005.7+), n8n will be dynamically orchestrated to execute up to 10 queries for Adzuna and 1 highly targeted query for Jooble based on available daily quotas.
+- **Quota Authority**: Once adaptive looping is implemented, n8n will *request* the search and FastAPI will *allow or deny* it. If n8n attempts an 11th Adzuna search, FastAPI will return HTTP 429. n8n will catch this 429 and exit the loop cleanly.
 
 ---
 
@@ -232,13 +232,15 @@ n8n's native Git integration is an Enterprise feature.
 **005.3** n8n -> FastAPI health handshake (First workflow) -> **GATE**
 **005.4** Credentials / secret integration (Configure Header Auth) -> **GATE**
 **005.5** Search plan (Create JSON static array in n8n) -> **GATE**
-**005.6** Provider orchestration (Loops and branches) -> **GATE**
-**005.7** Daily scheduling (Cron trigger) -> **GATE**
-**005.8** Failure handling (Alerts on 500) -> **GATE**
-**005.9** Retry/idempotency hardening (Test 429 quota exhaustion bounds) -> **GATE**
-**005.10** Notifications (Telegram/Email basic setup) -> **GATE**
-**005.11** Oracle VPS deployment (Provision infrastructure) -> **GATE**
-**005.12** Production security audit -> **LIVE**
+**005.5A** Search Taxonomy v2 (Expanded Role/Location models) -> **GATE**
+**005.6** Execute One Search (Single vertical slice) -> **GATE**
+**005.7** Execute Planned Searches (Loops and branches) -> **GATE**
+**005.8** Daily scheduling (Cron trigger) -> **GATE**
+**005.9** Failure handling (Alerts on 500) -> **GATE**
+**005.10** Retry/idempotency hardening (Test 429 quota exhaustion bounds) -> **GATE**
+**005.11** Notifications (Telegram/Email basic setup) -> **GATE**
+**005.12** Oracle VPS deployment (Provision infrastructure) -> **GATE**
+**005.13** Production security audit -> **LIVE**
 
 ---
 
@@ -337,6 +339,14 @@ Stop implementation if during any phase:
 ### Workflow 2: JP — Search Plan v2
 - **Trigger**: Manual
 - **Nodes**: Code nodes for data generation and deterministic validation.
-- **Purpose**: Owns orchestration search intent through three logical catalogs (Role, Location, Coverage Model). Expands semantic search boundaries significantly (27 canonical roles across 9 families, 12 canonical locations) while strictly avoiding naive Cartesian multiplication.
-- **Design Philosophy**: FastAPI will later ingest this taxonomy and dynamically execute combinations (e.g., matching tier 0 broadly, then prioritizing specific high-value hubs) rather than blindly triggering hundreds of requests per day. This guarantees maximum discovery footprint without exceeding Adzuna's 10 requests/day constraint.
+- **Purpose**: Owns orchestration search intent through three logical catalogs (Role, Location, Coverage Model). Expands semantic search boundaries significantly (29 canonical roles across 9 families, 12 canonical locations) while strictly avoiding naive Cartesian multiplication.
+- **Design Philosophy**: In future phases (005.7+), n8n will dynamically orchestrate combinations from this taxonomy (e.g., matching tier 0 broadly, then prioritizing specific high-value hubs) rather than blindly triggering hundreds of requests per day. This is designed for future implementation to guarantee maximum discovery footprint without exceeding Adzuna's 10 requests/day constraint.
 - **Security Boundary**: Does NOT contact providers or FastAPI. Zero credentials or quotas are involved at this stage. FastAPI remains the eventual authoritative validator.
+
+### Workflow 3: JP — Execute One Search
+- **Trigger**: Manual
+- **Nodes**: Code (Search Input), HTTP Request (Execute via FastAPI), Code (Validate Response).
+- **Purpose**: Executes EXACTLY ONE vertical slice of a search. n8n submits one canonical search intent (Role + Location) to FastAPI.
+- **Provider Selection**: FastAPI owns all provider selection logic. n8n contains zero provider secrets or selection rules. For 005.6, FastAPI strictly targets Adzuna.
+- **Quota & Persistence**: FastAPI owns and atomically enforces Adzuna quota. Existing PostgreSQL repository logic handles canonical Job storage and deduplication.
+- **Rules**: One search = one provider attempt. No retries, no Cartesian loops, no multi-provider fallbacks. This is a manual milestone to validate end-to-end orchestration safely before moving to scheduled/adaptive runs.

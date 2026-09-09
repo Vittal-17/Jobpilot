@@ -56,7 +56,7 @@ class AdzunaProvider(JobProvider):
             raise ProviderNetworkError("Adzuna connection error: Request failed")
         except Exception as e:
             logger.error(f"Adzuna unexpected network error: {type(e).__name__}")
-            from app.providers.exceptions import ProviderNetworkError
+            from app.providers.exceptions import ProviderError
             raise ProviderError("Adzuna unexpected error")
 
         # P1.3 Validate top-level schema

@@ -18,6 +18,8 @@ def verify_api_key(x_api_key: str | None = Header(default=None, description="Int
 def ingest_adzuna(query: JobSearchQuery, db: Session = Depends(get_db)):
     try:
         provider = AdzunaProvider()
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -41,6 +43,8 @@ def ingest_adzuna(query: JobSearchQuery, db: Session = Depends(get_db)):
 def ingest_jooble(query: JobSearchQuery, db: Session = Depends(get_db)):
     try:
         provider = JoobleProvider()
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail="Internal server error")
 
@@ -58,4 +62,44 @@ def ingest_jooble(query: JobSearchQuery, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="Provider configuration error")
     except Exception as e:
         # P0: No internal exception leakage
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+from app.schemas.job_search import CanonicalSearchIntent
+
+@router.post("/internal/search", response_model=IngestionResult, dependencies=[Depends(verify_api_key)])
+def internal_execute_search(intent: CanonicalSearchIntent, db: Session = Depends(get_db)):
+    # 005.6 - Force Adzuna selection for this milestone.
+    try:
+        provider = AdzunaProvider()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    # Map the orchestration intent to the business logic schema
+    query = JobSearchQuery(
+        keywords=intent.keywords,
+        location=intent.location,
+        radius_km=None,
+        page=1,
+        page_size=20
+    )
+
+    from app.providers.exceptions import ProviderConfigurationError
+    try:
+        # Existing quota and persistence logic
+        result = run_ingestion(db, "adzuna", provider, query)
+        if result.failed > 0:
+            raise HTTPException(status_code=502, detail="Adzuna provider failed")
+        return result
+    except RateLimitExceeded as e:
+        raise HTTPException(status_code=429, detail="Provider request quota exceeded")
+    except DatabaseUnavailable as e:
+        raise HTTPException(status_code=503, detail="Database temporarily unavailable")
+    except ProviderConfigurationError as e:
+        raise HTTPException(status_code=500, detail="Provider configuration error")
+    except HTTPException:
+        raise
+    except Exception as e:
         raise HTTPException(status_code=500, detail="Internal server error")
