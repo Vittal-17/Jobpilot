@@ -333,3 +333,9 @@ Stop implementation if during any phase:
 - [x] No foundation modification required
 
 **GATE CLEARED. DO NOT PROCEED TO 005.2 UNTIL AUTHORIZED.**
+
+### Workflow 2: JP — Search Plan
+- **Trigger**: Manual
+- **Nodes**: Code nodes for data generation and deterministic validation.
+- **Purpose**: Owns orchestration search intent and produces structurally validated search requests (focusing on Junior/Fresher roles in Bangalore).
+- **Security Boundary**: Does NOT contact providers or FastAPI. Zero credentials or quotas are involved at this stage. FastAPI remains the eventual authoritative validator.
