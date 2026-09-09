@@ -18,7 +18,7 @@ Internet
     ↓
 Reverse Proxy / HTTPS
     ↓
-n8n (Future Orchestration Layer)
+n8n (Local Orchestration Layer)
     ↓
 PRIVATE DOCKER NETWORK
     ↓
@@ -58,9 +58,7 @@ pytest tests/
 ## Limitations & Roadmap
 
 - **Scoring:** Match scoring is planned but not fully implemented.
-- **Orchestration:** Currently waiting to be connected to n8n for fully scheduled automated runs.
-
-*(Note: n8n orchestration and production deployment are planned for future phases and do not exist yet.)*
+- **Orchestration:** n8n is deployed locally for automated runs (production VPS exposure is a future milestone).
 
 ### Quota Consumption Semantics
 - **Atomic Pre-emption:** JobPilot explicitly acquires and commits the provider quota *before* issuing any external network request.

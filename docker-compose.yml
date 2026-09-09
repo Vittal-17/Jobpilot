@@ -4,7 +4,7 @@ services:
     restart: always
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-jobpilot}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jobpilot_pass}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD?POSTGRES_PASSWORD must be set}
       POSTGRES_DB: ${POSTGRES_DB:-jobpilot}
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
@@ -16,5 +16,74 @@ services:
       timeout: 5s
       retries: 5
 
+  db-setup:
+    image: postgres:16-alpine
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD?POSTGRES_PASSWORD must be set}
+      N8N_DB_NAME: ${N8N_DB_NAME:-n8n_data}
+      N8N_DB_USER: ${N8N_DB_USER:-n8n_user}
+      N8N_DB_PASSWORD: ${N8N_DB_PASSWORD?N8N_DB_PASSWORD must be set}
+      POSTGRES_USER: ${POSTGRES_USER:-jobpilot}
+      POSTGRES_DB: ${POSTGRES_DB:-jobpilot}
+    command:
+      - sh
+      - -c
+      - |
+        cat << "SQL" > setup.sql
+        SELECT format($$$$CREATE USER %I WITH PASSWORD %L$$$$, :'user_name', :'password_val')
+        WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'user_name') \gexec
+
+        ALTER USER :"user_name" WITH PASSWORD :'password_val';
+        ALTER USER :"user_name" NOSUPERUSER NOCREATEDB NOCREATEROLE;
+
+        SELECT format($$$$CREATE DATABASE %I OWNER %I$$$$, :'db_name', :'user_name')
+        WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = :'db_name') \gexec
+
+        REVOKE ALL PRIVILEGES ON DATABASE :"app_db" FROM :"user_name";
+        REVOKE CONNECT ON DATABASE :"app_db" FROM PUBLIC;
+        GRANT CONNECT ON DATABASE :"app_db" TO :"app_user";
+        SQL
+        psql -h db -U "$$POSTGRES_USER" -d postgres -v user_name="$$N8N_DB_USER" -v password_val="$$N8N_DB_PASSWORD" -v db_name="$$N8N_DB_NAME" -v app_db="$$POSTGRES_DB" -v app_user="$$POSTGRES_USER" -f setup.sql
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:2.38.1
+    restart: always
+    environment:
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=db
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${N8N_DB_NAME:-n8n_data}
+      - DB_POSTGRESDB_USER=${N8N_DB_USER:-n8n_user}
+      - DB_POSTGRESDB_PASSWORD=${N8N_DB_PASSWORD?N8N_DB_PASSWORD must be set}
+      # Security & Exposure
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      - N8N_PORT=5678
+      - N8N_LISTEN_ADDRESS=0.0.0.0
+      - N8N_WEBHOOK_URL=http://localhost:5678/
+      # Timezone configuration for India (operator timezone)
+      - GENERIC_TIMEZONE=Asia/Kolkata
+      - TZ=Asia/Kolkata
+      # Warning Mitigations (Explicit Intent)
+      - N8N_RUNNERS_TASK_TIMEOUT=30
+      - N8N_COMPRESSION_NODE_MAX_DECOMPRESSED_SIZE_BYTES=104857600
+      - N8N_COMPRESSION_NODE_MAX_ZIP_ENTRIES=1000
+      # Execution History / Retention (Keep VPS disk usage small)
+      - EXECUTIONS_DATA_PRUNE=true
+      - EXECUTIONS_DATA_MAX_AGE=168
+    ports:
+      - "127.0.0.1:5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      db:
+        condition: service_healthy
+      db-setup:
+        condition: service_completed_successfully
+
 volumes:
   postgres_data:
+  n8n_data:
