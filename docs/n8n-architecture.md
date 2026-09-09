@@ -340,7 +340,7 @@ Stop implementation if during any phase:
 - **Trigger**: Manual
 - **Nodes**: Code nodes for data generation and deterministic validation.
 - **Purpose**: Owns orchestration search intent through three logical catalogs (Role, Location, Coverage Model). Expands semantic search boundaries significantly (29 canonical roles across 9 families, 12 canonical locations) while strictly avoiding naive Cartesian multiplication.
-- **Design Philosophy**: In future phases (005.7+), n8n will dynamically orchestrate combinations from this taxonomy (e.g., matching tier 0 broadly, then prioritizing specific high-value hubs) rather than blindly triggering hundreds of requests per day. This is designed for future implementation to guarantee maximum discovery footprint without exceeding Adzuna's 10 requests/day constraint.
+- **Design Philosophy**: In future phases (005.7+), n8n will dynamically orchestrate combinations from this taxonomy (e.g., matching tier 0 broadly, then prioritizing specific high-value hubs) rather than blindly triggering hundreds of requests per day. This is designed for future implementation to guarantee maximum discovery footprint without exceeding the historical internal safety budget (historically 10/day, now re-calibrated per the explicit Policy Data Model).
 - **Security Boundary**: Does NOT contact providers or FastAPI. Zero credentials or quotas are involved at this stage. FastAPI remains the eventual authoritative validator.
 
 ### Workflow 3: JP — Execute One Search

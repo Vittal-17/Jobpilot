@@ -15,11 +15,14 @@ class Settings(BaseSettings):
 
     adzuna_app_id: str = ""
     adzuna_app_key: str = ""
-    adzuna_daily_limit: int = 10
+    # Provider Quota - JobPilot Safety Budgets
+    adzuna_safety_budget_daily: int = 25
+    adzuna_account_limit_daily: int | None = None
 
     jooble_api_key: str = ""
-    jooble_daily_limit: int = 1
-    jooble_lifetime_limit: int = 500
+    jooble_safety_budget_daily: int = 2
+    jooble_safety_budget_lifetime: int = 500
+    jooble_account_limit_lifetime: int | None = None
 
     environment: str = "development"
 
