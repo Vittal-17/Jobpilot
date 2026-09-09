@@ -334,8 +334,9 @@ Stop implementation if during any phase:
 
 **GATE CLEARED. DO NOT PROCEED TO 005.2 UNTIL AUTHORIZED.**
 
-### Workflow 2: JP — Search Plan
+### Workflow 2: JP — Search Plan v2
 - **Trigger**: Manual
 - **Nodes**: Code nodes for data generation and deterministic validation.
-- **Purpose**: Owns orchestration search intent and produces structurally validated search requests (focusing on Junior/Fresher roles in Bangalore).
+- **Purpose**: Owns orchestration search intent through three logical catalogs (Role, Location, Coverage Model). Expands semantic search boundaries significantly (27 canonical roles across 9 families, 12 canonical locations) while strictly avoiding naive Cartesian multiplication.
+- **Design Philosophy**: FastAPI will later ingest this taxonomy and dynamically execute combinations (e.g., matching tier 0 broadly, then prioritizing specific high-value hubs) rather than blindly triggering hundreds of requests per day. This guarantees maximum discovery footprint without exceeding Adzuna's 10 requests/day constraint.
 - **Security Boundary**: Does NOT contact providers or FastAPI. Zero credentials or quotas are involved at this stage. FastAPI remains the eventual authoritative validator.
