@@ -21,5 +21,5 @@ def test_acquire_slot_empty_provider(db_session: Session):
         acquire_provider_request_slot(db_session, "")
 
 def test_acquire_slot_supported_provider(db_session: Session, monkeypatch):
-    monkeypatch.setattr(settings, "adzuna_daily_limit", 10)
+    monkeypatch.setattr(settings, "adzuna_safety_budget_daily", 10)
     assert acquire_provider_request_slot(db_session, "adzuna") is True

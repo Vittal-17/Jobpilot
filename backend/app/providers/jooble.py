@@ -55,7 +55,7 @@ class JoobleProvider(JobProvider):
             raise ProviderNetworkError("Jooble connection error: Request failed")
         except Exception as e:
             logger.error(f"Jooble unexpected network error: {type(e).__name__}")
-            from app.providers.exceptions import ProviderNetworkError
+            from app.providers.exceptions import ProviderError
             raise ProviderError("Jooble unexpected error")
 
         if not isinstance(data, dict) or "jobs" not in data:

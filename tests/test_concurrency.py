@@ -8,7 +8,7 @@ import logging
 
 def test_concurrent_quota(engine, monkeypatch, caplog):
     caplog.set_level(logging.ERROR)
-    monkeypatch.setattr(settings, "jooble_daily_limit", 5)
+    monkeypatch.setattr(settings, "jooble_safety_budget_daily", 5)
 
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

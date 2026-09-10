@@ -74,6 +74,12 @@ def engine():
     yield engine
     # Base.metadata.drop_all(bind=engine)
 
+
+@pytest.fixture(scope="session")
+def db_engine(engine):
+    """Compatibility alias for integration tests that request db_engine."""
+    return engine
+
 @pytest.fixture(scope="function")
 def db_session(engine):
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

@@ -13,7 +13,7 @@ def test_auth_matrix_and_quota_side_effects(db_session, monkeypatch):
     app.dependency_overrides[get_db] = lambda: db_session
     test_secret = "test_secret_12345"
     monkeypatch.setattr(settings, "api_secret_key", test_secret)
-    monkeypatch.setattr(settings, "adzuna_daily_limit", 10)
+    monkeypatch.setattr(settings, "adzuna_safety_budget_daily", 10)
     monkeypatch.setattr(settings, "adzuna_app_id", "A")
     monkeypatch.setattr(settings, "adzuna_app_key", "B")
 

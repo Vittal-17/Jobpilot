@@ -11,8 +11,7 @@ class DummyProvider:
 
 def test_usage_limits(db_session: Session, monkeypatch):
     from app.core.config import settings
-    # We use jooble to bypass Pydantic extra field validation
-    monkeypatch.setattr(settings, "jooble_daily_limit", 2)
+    monkeypatch.setattr(settings, "jooble_safety_budget_daily", 2)
 
     query = JobSearchQuery(keywords="k", location="l")
     provider = DummyProvider()
@@ -42,7 +41,7 @@ class FailingConfigProvider:
 
 def test_config_failure_does_not_consume_quota(db_session: Session, monkeypatch):
     from app.core.config import settings
-    monkeypatch.setattr(settings, "jooble_daily_limit", 10)
+    monkeypatch.setattr(settings, "jooble_safety_budget_daily", 10)
     query = JobSearchQuery(keywords="k", location="l")
     provider = FailingConfigProvider()
 

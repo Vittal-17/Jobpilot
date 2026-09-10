@@ -6,7 +6,6 @@ import logging
 from app.providers.base import JobProvider
 from app.schemas.job_search import JobSearchQuery, IngestionResult
 from app.db.repository.job_repository import save_job
-from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +14,76 @@ class RateLimitExceeded(Exception):
 
 class DatabaseUnavailable(Exception):
     pass
+
+class InvalidExecutionTransition(Exception):
+    pass
+
+
+def _transition_execution(
+    db: Session,
+    execution_id: int,
+    expected_status: str,
+    new_status: str,
+    values: dict,
+) -> None:
+
+    ALLOWED_COLUMNS = {
+        "started_at", "completed_at", "provider_name",
+        "jobs_fetched", "jobs_created", "jobs_duplicates",
+        "jobs_invalid", "error_message"
+    }
+
+    assignments = ["status = :new_status"]
+    params = {
+        "execution_id": execution_id,
+        "expected_status": expected_status,
+        "new_status": new_status,
+    }
+    for column, value in values.items():
+        if column not in ALLOWED_COLUMNS:
+            raise ValueError(f"Unsafe transition column: {column}")
+        assignments.append(f"{column} = :{column}")
+        params[column] = value
+
+
+    result = db.execute(
+        text(
+            f"UPDATE search_execution SET {', '.join(assignments)} "
+            "WHERE id = :execution_id AND status = :expected_status"
+        ),
+        params,
+    )
+    if result.rowcount != 1:
+        db.rollback()
+        raise InvalidExecutionTransition(
+            f"Execution {execution_id} is not in {expected_status} state"
+        )
+    db.commit()
+
+
+def _fail_execution(db: Session, execution_id: int, error_message: str) -> None:
+    _transition_execution(
+        db,
+        execution_id,
+        "started",
+        "failed",
+        {
+            "completed_at": datetime.now(timezone.utc),
+            "error_message": error_message,
+        },
+    )
+
+
+def _best_effort_fail_execution(
+    db: Session, execution_id: int, error_message: str
+) -> None:
+    try:
+        _fail_execution(db, execution_id, error_message)
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "Unable to record failed execution execution_id=%s", execution_id
+        )
 
 def acquire_provider_request_slot(db: Session, provider_name: str) -> bool:
     """Acquires a quota slot atomically. Returns True if request is allowed, False if over limit."""
@@ -86,31 +155,56 @@ def acquire_provider_request_slot(db: Session, provider_name: str) -> bool:
         return True
     except Exception as e:
         db.rollback()
-        logger.error(f"Failed to acquire quota due to database failure: {e}")
+        logger.exception("Failed to acquire provider quota provider_name=%s", provider_name)
         raise DatabaseUnavailable("Quota database unavailable")
 
-def run_ingestion(db: Session, provider_name: str, provider: JobProvider, query: JobSearchQuery) -> IngestionResult:
+def run_ingestion(db: Session, provider_name: str, provider: JobProvider, query: JobSearchQuery, execution_id: int | None = None) -> IngestionResult:
     result = IngestionResult(provider=provider_name)
 
-    # Provider configuration failure (e.g. missing credentials) should happen
-    # before quota acquisition. Wait, the provider is passed in.
-    # We will assume provider instantiation validates it, or we call it explicitly.
-    if hasattr(provider, "validate_config"):
-        provider.validate_config()
+    if execution_id is not None:
+        _transition_execution(
+            db,
+            execution_id,
+            "selected",
+            "started",
+            {
+                "started_at": datetime.now(timezone.utc),
+                "provider_name": provider_name,
+            },
+        )
 
-    if not acquire_provider_request_slot(db, provider_name):
-        logger.warning(f"Provider {provider_name} exceeded daily or lifetime limit")
-        raise RateLimitExceeded(f"Limit exceeded for {provider_name}")
-
-    from app.providers.exceptions import ProviderError
+    from app.providers.exceptions import ProviderConfigurationError, ProviderError
     try:
+        if hasattr(provider, "validate_config"):
+            provider.validate_config()
+
+        if not acquire_provider_request_slot(db, provider_name):
+            logger.warning("Provider %s has no remaining request quota", provider_name)
+            if execution_id is not None:
+                _fail_execution(db, execution_id, "Rate limit exceeded")
+            raise RateLimitExceeded(f"Limit exceeded for {provider_name}")
+
         jobs = provider.search_jobs(query)
+    except ProviderConfigurationError:
+        if execution_id is not None:
+            _fail_execution(db, execution_id, "Provider configuration error")
+        raise
+    except (RateLimitExceeded, InvalidExecutionTransition):
+        raise
+    except DatabaseUnavailable:
+        if execution_id is not None:
+            _best_effort_fail_execution(db, execution_id, "Quota database unavailable")
+        raise
     except ProviderError as e:
         logger.error(f"Provider {provider_name} failed: failure_type={e.__class__.__name__}")
+        if execution_id is not None:
+            _fail_execution(db, execution_id, str(e))
         result.failed = 1
         return result
     except Exception as e:
         logger.error(f"Provider {provider_name} failed due to unexpected error: failure_type={e.__class__.__name__}")
+        if execution_id is not None:
+            _fail_execution(db, execution_id, str(e))
         result.failed = 1
         return result
 
@@ -131,5 +225,20 @@ def run_ingestion(db: Session, provider_name: str, provider: JobProvider, query:
             logger.warning(f"Failed to persist job {job.source_job_id} due to unexpected error")
             result.invalid += 1
 
-    db.commit()
+    if execution_id is not None:
+        _transition_execution(
+            db,
+            execution_id,
+            "started",
+            "succeeded",
+            {
+                "completed_at": datetime.now(timezone.utc),
+                "jobs_fetched": result.fetched,
+                "jobs_created": result.created,
+                "jobs_duplicates": result.duplicates,
+                "jobs_invalid": result.invalid,
+            },
+        )
+    else:
+        db.commit()
     return result

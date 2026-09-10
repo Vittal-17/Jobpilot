@@ -336,17 +336,14 @@ Stop implementation if during any phase:
 
 **GATE CLEARED. DO NOT PROCEED TO 005.2 UNTIL AUTHORIZED.**
 
-### Workflow 2: JP — Search Plan v2
-- **Trigger**: Manual
-- **Nodes**: Code nodes for data generation and deterministic validation.
-- **Purpose**: Owns orchestration search intent through three logical catalogs (Role, Location, Coverage Model). Expands semantic search boundaries significantly (29 canonical roles across 9 families, 12 canonical locations) while strictly avoiding naive Cartesian multiplication.
-- **Design Philosophy**: In future phases (005.7+), n8n will dynamically orchestrate combinations from this taxonomy (e.g., matching tier 0 broadly, then prioritizing specific high-value hubs) rather than blindly triggering hundreds of requests per day. This is designed for future implementation to guarantee maximum discovery footprint without exceeding the historical internal safety budget (historically 10/day, now re-calibrated per the explicit Policy Data Model).
-- **Security Boundary**: Does NOT contact providers or FastAPI. Zero credentials or quotas are involved at this stage. FastAPI remains the eventual authoritative validator.
+### Workflow 2: JP - Search Plan v2
+- **Status**: Legacy taxonomy demonstration only. It is not authoritative and is not part of 005.7 execution.
+- **Ownership**: FastAPI owns the 29-role and 12-location taxonomy and bounded candidate generation.
 
-### Workflow 3: JP — Execute One Search
-- **Trigger**: Manual
-- **Nodes**: Code (Search Input), HTTP Request (Execute via FastAPI), Code (Validate Response).
-- **Purpose**: Executes EXACTLY ONE vertical slice of a search. n8n submits one canonical search intent (Role + Location) to FastAPI.
-- **Provider Selection**: FastAPI owns all provider selection logic. n8n contains zero provider secrets or selection rules. For 005.6, FastAPI strictly targets Adzuna.
-- **Quota & Persistence**: FastAPI owns and atomically enforces Adzuna quota. Existing PostgreSQL repository logic handles canonical Job storage and deduplication.
-- **Rules**: One search = one provider attempt. No retries, no Cartesian loops, no multi-provider fallbacks. This is a manual milestone to validate end-to-end orchestration safely before moving to scheduled/adaptive runs.
+### Workflow 3: JP - Execute One Search
+- **Trigger**: Manual and inactive by default.
+- **Flow**: `POST /ingestion/internal/select-next` -> validate candidate/`execution_id` -> if candidate exists, send the returned `intent` unchanged to `POST /ingestion/internal/search`; otherwise terminate at `No Candidate`.
+- **Boundedness**: One trigger performs at most one selection and one execution. There are no loops or automatic retries.
+- **Credentials**: Both HTTP nodes use the existing FastAPI header credential. n8n contains no Adzuna or Jooble key.
+- **Quota**: Selection only reads availability. FastAPI reserves quota atomically in the executor and may return 429 if the advisory selection became stale.
+- **Artifact**: `backend/JP___Execute_One_Search.json` is the importable workflow export and mirrors the installed local workflow. Provider execution was not invoked during 005.7 verification.

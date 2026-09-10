@@ -15,7 +15,11 @@ def test_adzuna_endpoint_missing_creds(monkeypatch, db_session):
     try:
         from app.core.config import settings
         monkeypatch.setattr(settings, "adzuna_app_id", "")
-        res = client.post("/ingestion/adzuna", headers={"X-Api-Key": "your_strong_internal_api_secret_key_here"}, json={"keywords": "py", "location": "blr"})
+        res = client.post(
+            "/ingestion/adzuna",
+            headers={"X-Api-Key": settings.api_secret_key},
+            json={"keywords": "py", "location": "blr"},
+        )
         assert res.status_code == 500
     finally:
         app.dependency_overrides.clear()

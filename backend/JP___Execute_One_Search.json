@@ -1,0 +1,113 @@
+[
+  {
+    "updatedAt": "2026-09-09T00:00:00.000Z",
+    "createdAt": "2026-09-09T00:00:00.000Z",
+    "id": "workflow-execute-one-search",
+    "name": "JP - Execute One Search",
+    "active": false,
+    "isArchived": false,
+    "nodes": [
+      {
+        "parameters": {},
+        "id": "node-trigger",
+        "name": "When clicking Execute Workflow",
+        "type": "n8n-nodes-base.manualTrigger",
+        "typeVersion": 1,
+        "position": [250, 300]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "http://fastapi:8000/ingestion/internal/select-next",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "httpHeaderAuth",
+          "sendBody": false
+        },
+        "id": "node-select",
+        "name": "Select Next via FastAPI",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.1,
+        "position": [450, 300],
+        "credentials": {
+          "httpHeaderAuth": {
+            "id": "T0w0H2O4M9E6W4T6",
+            "name": "JP - FastAPI Internal API"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {"caseSensitive": true, "typeValidation": "strict"},
+            "conditions": [
+              {
+                "leftValue": "={{ $json.intent !== null && Number.isInteger($json.execution_id) && $json.intent.execution_id === $json.execution_id }}",
+                "rightValue": true,
+                "operator": {"type": "boolean", "operation": "true", "singleValue": true}
+              }
+            ],
+            "combinator": "and"
+          }
+        },
+        "id": "node-has-candidate",
+        "name": "Candidate Selected",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2.2,
+        "position": [650, 300]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "http://fastapi:8000/ingestion/internal/search",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "httpHeaderAuth",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json.intent) }}"
+        },
+        "id": "node-execute",
+        "name": "Execute via FastAPI",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.1,
+        "position": [850, 220],
+        "credentials": {
+          "httpHeaderAuth": {
+            "id": "T0w0H2O4M9E6W4T6",
+            "name": "JP - FastAPI Internal API"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "jsCode": "const res = $input.first().json;\nif (!res.provider) throw new Error('Response missing provider');\nfor (const field of ['fetched', 'created', 'duplicates', 'invalid', 'failed']) {\n  if (typeof res[field] !== 'number') throw new Error(`Response missing ${field} count`);\n}\nreturn { json: res };"
+        },
+        "id": "node-validate",
+        "name": "Validate Response",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [1050, 220]
+      },
+      {
+        "parameters": {
+          "jsCode": "return { json: { summary: 'No eligible search selected.', selection: $input.first().json } };"
+        },
+        "id": "node-no-candidate",
+        "name": "No Candidate",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [850, 380]
+      }
+    ],
+    "connections": {
+      "When clicking Execute Workflow": {"main": [[{"node": "Select Next via FastAPI", "type": "main", "index": 0}]]},
+      "Select Next via FastAPI": {"main": [[{"node": "Candidate Selected", "type": "main", "index": 0}]]},
+      "Candidate Selected": {"main": [[{"node": "Execute via FastAPI", "type": "main", "index": 0}], [{"node": "No Candidate", "type": "main", "index": 0}]]},
+      "Execute via FastAPI": {"main": [[{"node": "Validate Response", "type": "main", "index": 0}]]}
+    },
+    "settings": {},
+    "staticData": null,
+    "meta": null,
+    "pinData": null,
+    "tags": []
+  }
+]

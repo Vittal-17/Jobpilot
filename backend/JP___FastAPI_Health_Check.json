@@ -1,0 +1,48 @@
+[
+  {
+    "parameters": {},
+    "id": "f8a7c2b0-8c20-410a-b31c-3b3b4f5195b0",
+    "name": "When clicking \u2018Execute Workflow\u2019",
+    "type": "n8n-nodes-base.manualTrigger",
+    "typeVersion": 1,
+    "position": [
+      250,
+      300
+    ]
+  },
+  {
+    "parameters": {
+      "url": "http://fastapi:8000/internal/health",
+      "authentication": "predefinedCredentialType",
+      "nodeCredentialType": "httpHeaderAuth",
+      "options": {}
+    },
+    "id": "4e1f7c22-9e90-4497-a727-86c4a8f906f3",
+    "name": "HTTP Request",
+    "type": "n8n-nodes-base.httpRequest",
+    "typeVersion": 4.1,
+    "position": [
+      450,
+      300
+    ],
+    "credentials": {
+      "httpHeaderAuth": {
+        "id": "T0w0H2O4M9E6W4T6",
+        "name": "JP \u2014 FastAPI Internal API"
+      }
+    }
+  },
+  {
+    "parameters": {
+      "jsCode": "if ($input.first().json.status !== 'ok') {\n  throw new Error('Validation Failed: Expected status=ok');\n}\nreturn $input.all();"
+    },
+    "id": "8c42b292-6a4a-4e2b-b6f7-c25f49e49a88",
+    "name": "Validate Response",
+    "type": "n8n-nodes-base.code",
+    "typeVersion": 2,
+    "position": [
+      650,
+      300
+    ]
+  }
+]

@@ -23,7 +23,8 @@ class CanonicalSearchIntent(BaseModel):
     keywords: str = Field(..., min_length=1, max_length=100)
     location_id: str = Field(..., min_length=1)
     location: str = Field(..., min_length=1, max_length=100)
-    priority: int | None = Field(None)
+    priority: int | None = Field(None, ge=1, le=3)
+    execution_id: int | None = Field(None, gt=0)
 
     @field_validator('role_id', 'keywords', 'location_id', 'location')
     @classmethod

@@ -12,8 +12,8 @@ def get_lifetime_count(session, provider_state):
 
 def test_concurrent_jooble_lifetime(engine, monkeypatch, caplog):
     caplog.set_level(logging.ERROR)
-    monkeypatch.setattr(settings, "jooble_daily_limit", 100)
-    monkeypatch.setattr(settings, "jooble_lifetime_limit", 15)
+    monkeypatch.setattr(settings, "jooble_safety_budget_daily", 100)
+    monkeypatch.setattr(settings, "jooble_safety_budget_lifetime", 15)
 
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -42,8 +42,8 @@ def test_concurrent_jooble_lifetime(engine, monkeypatch, caplog):
     s.close()
 
 def test_sequential_lifetime_boundary(engine, monkeypatch):
-    monkeypatch.setattr(settings, "jooble_daily_limit", 100)
-    monkeypatch.setattr(settings, "jooble_lifetime_limit", 500)
+    monkeypatch.setattr(settings, "jooble_safety_budget_daily", 100)
+    monkeypatch.setattr(settings, "jooble_safety_budget_lifetime", 500)
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
     s = SessionLocal()
@@ -67,8 +67,8 @@ def test_sequential_lifetime_boundary(engine, monkeypatch):
         s.close()
 
 def test_concurrent_lifetime_boundary(engine, monkeypatch):
-    monkeypatch.setattr(settings, "jooble_daily_limit", 100)
-    monkeypatch.setattr(settings, "jooble_lifetime_limit", 500)
+    monkeypatch.setattr(settings, "jooble_safety_budget_daily", 100)
+    monkeypatch.setattr(settings, "jooble_safety_budget_lifetime", 500)
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
     s = SessionLocal()
