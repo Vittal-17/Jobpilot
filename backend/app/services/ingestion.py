@@ -162,16 +162,25 @@ def run_ingestion(db: Session, provider_name: str, provider: JobProvider, query:
     result = IngestionResult(provider=provider_name)
 
     if execution_id is not None:
-        _transition_execution(
-            db,
-            execution_id,
-            "selected",
-            "started",
+        result_transition = db.execute(
+            text(
+                "UPDATE search_execution SET status = 'started', started_at = :started_at, "
+                "provider_name = :provider_name "
+                "WHERE id = :execution_id AND status = 'selected' "
+                "AND (provider_name IS NULL OR provider_name = :provider_name)"
+            ),
             {
-                "started_at": datetime.now(timezone.utc),
+                "execution_id": execution_id,
                 "provider_name": provider_name,
+                "started_at": datetime.now(timezone.utc),
             },
         )
+        if result_transition.rowcount != 1:
+            db.rollback()
+            raise InvalidExecutionTransition(
+                f"Execution {execution_id} is not routed to {provider_name}"
+            )
+        db.commit()
 
     from app.providers.exceptions import ProviderConfigurationError, ProviderError
     try:

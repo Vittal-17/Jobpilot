@@ -37,14 +37,14 @@ def test_internal_search_malformed_request():
     })
     assert response.status_code == 422
 
-def test_internal_search_unsupported_provider_field():
+def test_internal_search_rejects_provider_without_execution():
     headers = {"X-Api-Key": settings.api_secret_key}
     response = client.post("/ingestion/internal/search", headers=headers, json={
         "role_id": "ROLE-PY-001",
         "keywords": "Python",
         "location_id": "LOC-BLR-001",
         "location": "Bengaluru",
-        "provider": "adzuna"  # Extra fields forbidden
+        "provider": "adzuna"
     })
     assert response.status_code == 422
 
@@ -80,7 +80,7 @@ def test_internal_search_success_without_execution_id_remains_legacy_compatible(
 
 @patch("app.api.endpoints.ingestion.run_ingestion")
 def test_internal_search_matching_execution_is_accepted(mock_run_ingestion):
-    claim = MagicMock(id=99, candidate_id="ROLE-PY-001::LOC-BLR-001", status="selected")
+    claim = MagicMock(id=99, candidate_id="ROLE-PY-001::LOC-BLR-001", status="selected", provider_name="adzuna")
     db = MagicMock()
     db.query.return_value.filter.return_value.first.return_value = claim
     app.dependency_overrides[get_db] = lambda: db
@@ -96,6 +96,7 @@ def test_internal_search_matching_execution_is_accepted(mock_run_ingestion):
                 "location": "Bengaluru",
                 "priority": 1,
                 "execution_id": 99,
+                "provider": "adzuna",
             },
         )
         assert response.status_code == 200
@@ -108,8 +109,8 @@ def test_internal_search_matching_execution_is_accepted(mock_run_ingestion):
     ("claim", "execution_id", "expected_status"),
     [
         (None, 999, 404),
-        (MagicMock(candidate_id="ROLE-PY-001::LOC-BLR-001", status="started"), 99, 409),
-        (MagicMock(candidate_id="ROLE-PY-002::LOC-BLR-001", status="selected"), 99, 409),
+        (MagicMock(candidate_id="ROLE-PY-001::LOC-BLR-001", status="started", provider_name="adzuna"), 99, 409),
+        (MagicMock(candidate_id="ROLE-PY-002::LOC-BLR-001", status="selected", provider_name="adzuna"), 99, 409),
     ],
 )
 def test_internal_search_rejects_invalid_execution_correlation(claim, execution_id, expected_status):
@@ -127,6 +128,7 @@ def test_internal_search_rejects_invalid_execution_correlation(claim, execution_
                 "location": "Bengaluru",
                 "priority": 1,
                 "execution_id": execution_id,
+                "provider": "adzuna",
             },
         )
         assert response.status_code == expected_status
@@ -135,7 +137,7 @@ def test_internal_search_rejects_invalid_execution_correlation(claim, execution_
 
 
 def test_internal_search_rejects_spoofed_canonical_keywords():
-    claim = MagicMock(candidate_id="ROLE-PY-001::LOC-BLR-001", status="selected")
+    claim = MagicMock(candidate_id="ROLE-PY-001::LOC-BLR-001", status="selected", provider_name="adzuna")
     db = MagicMock()
     db.query.return_value.filter.return_value.first.return_value = claim
     app.dependency_overrides[get_db] = lambda: db
@@ -150,11 +152,60 @@ def test_internal_search_rejects_spoofed_canonical_keywords():
                 "location": "Bengaluru",
                 "priority": 1,
                 "execution_id": 99,
+                "provider": "adzuna",
             },
         )
         assert response.status_code == 409
     finally:
         app.dependency_overrides.clear()
+
+
+@patch("app.api.endpoints.ingestion.run_ingestion")
+def test_internal_search_rejects_provider_remap(mock_run_ingestion):
+    claim = MagicMock(
+        candidate_id="ROLE-PY-001::LOC-BLR-001",
+        status="selected",
+        provider_name="adzuna",
+    )
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = claim
+    app.dependency_overrides[get_db] = lambda: db
+    try:
+        response = client.post(
+            "/ingestion/internal/search",
+            headers={"X-Api-Key": settings.api_secret_key},
+            json={
+                "role_id": "ROLE-PY-001",
+                "keywords": "Python Developer",
+                "location_id": "LOC-BLR-001",
+                "location": "Bengaluru",
+                "priority": 1,
+                "execution_id": 99,
+                "provider": "jooble",
+            },
+        )
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Execution provider does not match routing decision"
+        mock_run_ingestion.assert_not_called()
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_internal_search_rejects_unknown_provider():
+    response = client.post(
+        "/ingestion/internal/search",
+        headers={"X-Api-Key": settings.api_secret_key},
+        json={
+            "role_id": "ROLE-PY-001",
+            "keywords": "Python Developer",
+            "location_id": "LOC-BLR-001",
+            "location": "Bengaluru",
+            "priority": 1,
+            "execution_id": 99,
+            "provider": "importlib.evil",
+        },
+    )
+    assert response.status_code == 422
 
 @patch("app.api.endpoints.ingestion.run_ingestion")
 def test_internal_search_quota_exceeded(mock_run_ingestion):

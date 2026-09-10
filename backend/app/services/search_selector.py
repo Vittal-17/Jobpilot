@@ -8,7 +8,6 @@ from pydantic import BaseModel
 
 from app.domain.taxonomy import get_authoritative_taxonomy
 from app.domain.candidate import SearchCandidate
-from app.services.quota_policy import get_provider_policy
 from app.db.models.search_execution import SearchExecutionModel
 
 logger = logging.getLogger(__name__)
@@ -47,49 +46,6 @@ def generate_candidates() -> List[SearchCandidate]:
     candidates.sort(key=lambda c: (c.priority, c.tier, c.candidate_id))
     return candidates
 
-
-def get_provider_remaining_capacity(
-    db: Session,
-    provider_name: str,
-    reference_time: datetime | None = None,
-) -> bool:
-    policy = get_provider_policy(provider_name)
-
-    minute_limit = policy.get_effective_limit('minute')
-    daily_limit = policy.get_effective_limit('daily')
-    lifetime_limit = policy.get_effective_limit('lifetime')
-
-    if (minute_limit is not None and minute_limit <= 0) or \
-       (daily_limit is not None and daily_limit <= 0) or \
-       (lifetime_limit is not None and lifetime_limit <= 0):
-        return False
-
-    now_utc = reference_time or datetime.now(timezone.utc)
-    current_minute = now_utc.replace(second=0, microsecond=0)
-    today = now_utc.date()
-
-    # Minute
-    if minute_limit is not None:
-        stmt = text("SELECT request_count FROM provider_minute_usage WHERE provider_name = :p AND usage_minute = :m")
-        usage = db.execute(stmt, {"p": provider_name, "m": current_minute}).scalar() or 0
-        if minute_limit - usage <= 0:
-            return False
-
-    # Daily
-    if daily_limit is not None:
-        stmt = text("SELECT request_count FROM provider_usage WHERE provider_name = :p AND usage_date = :d")
-        usage = db.execute(stmt, {"p": provider_name, "d": today}).scalar() or 0
-        if daily_limit - usage <= 0:
-            return False
-
-    # Lifetime
-    if lifetime_limit is not None:
-        stmt = text("SELECT lifetime_count FROM provider_state WHERE provider_name = :p")
-        usage = db.execute(stmt, {"p": provider_name}).scalar() or 0
-        if lifetime_limit - usage <= 0:
-            return False
-
-    return True
 
 def _get_history(db: Session, candidate_ids: List[str]) -> Dict[str, dict]:
     """Fetches freshness and success history for the given candidates."""
@@ -162,21 +118,17 @@ def select_next_search(
     # 1. Clean abandoned claims so they don't permanently poison candidates
     _clean_abandoned_claims(db, now)
 
-    # 2. Check Quota (If no quota for Adzuna, we can't search)
-    if not get_provider_remaining_capacity(db, "adzuna", now):
-        return SelectionResult(candidate=None, reason="quota_exhausted")
-
-    # 3. Generate bounds
+    # 2. Generate bounds
     candidates = generate_candidates()
     cids = [c.candidate_id for c in candidates]
 
-    # 4. Fetch history
+    # 3. Fetch history
     history = _get_history(db, cids)
 
     cooldown_success = timedelta(hours=SUCCESS_COOLDOWN_HOURS)
     cooldown_selected = timedelta(minutes=ABANDONED_CLAIM_MINUTES)
 
-    # 5. Evaluate eligibility and rank
+    # 4. Evaluate eligibility and rank
     eligible = []
     for c in candidates:
         h = history.get(c.candidate_id, {})
@@ -210,7 +162,7 @@ def select_next_search(
     # Sort by score ascending, then by deterministic candidate ID
     eligible.sort(key=lambda x: (x[0], x[1].candidate_id))
 
-    # 6. Concurrency-safe claim mechanism
+    # 5. Concurrency-safe claim mechanism
     for score, candidate in eligible:
         if before_claim:
             before_claim(candidate)

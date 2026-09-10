@@ -18,6 +18,7 @@ def test_execute_workflow_carries_selection_execution_id():
     assert executor["parameters"]["url"].endswith("/ingestion/internal/search")
     assert executor["parameters"]["jsonBody"] == "={{ JSON.stringify($json.intent) }}"
     assert "execution_id" in branch["parameters"]["conditions"]["conditions"][0]["leftValue"]
+    assert "intent.provider === $json.provider" in branch["parameters"]["conditions"]["conditions"][0]["leftValue"]
     assert workflow["active"] is False
 
     connections = workflow["connections"]
@@ -27,3 +28,6 @@ def test_execute_workflow_carries_selection_execution_id():
     serialized = json.dumps(workflow).lower()
     assert "adzuna_app_key" not in serialized
     assert "jooble_api_key" not in serialized
+    assert '"provider":"adzuna"' not in serialized.replace(" ", "")
+    assert '"provider":"jooble"' not in serialized.replace(" ", "")
+    assert serialized.count("/ingestion/internal/search") == 1

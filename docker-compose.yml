@@ -11,7 +11,9 @@ services:
       - API_SECRET_KEY=${API_SECRET_KEY?API_SECRET_KEY must be set}
       - ADZUNA_APP_ID=${ADZUNA_APP_ID:-}
       - ADZUNA_APP_KEY=${ADZUNA_APP_KEY:-}
+      - ADZUNA_ENABLED=${ADZUNA_ENABLED:-true}
       - JOOBLE_API_KEY=${JOOBLE_API_KEY:-}
+      - JOOBLE_ENABLED=${JOOBLE_ENABLED:-true}
     volumes:
       - ./backend:/app
     working_dir: /app

@@ -26,6 +26,7 @@ def _claim(db_session, candidate_id="ROLE-TEST::LOC-TEST"):
     claim = SearchExecutionModel(
         candidate_id=candidate_id,
         status="selected",
+        provider_name="adzuna",
         selected_at=datetime.now(timezone.utc),
     )
     db_session.add(claim)
@@ -136,3 +137,37 @@ def test_terminal_execution_replay_is_rejected(db_session):
             JobSearchQuery(keywords="test", location="test"),
             claim.id,
         )
+
+
+def test_quota_race_fails_bound_provider_without_fallback(db_session, monkeypatch):
+    from app.core.config import settings
+    from app.db.models.provider_usage import ProviderUsageModel
+    from app.services.ingestion import RateLimitExceeded
+
+    monkeypatch.setattr(settings, "adzuna_safety_budget_daily", 1)
+    claim = _claim(db_session)
+    db_session.add(
+        ProviderUsageModel(
+            provider_name="adzuna",
+            usage_date=datetime.now(timezone.utc).date(),
+            request_count=1,
+        )
+    )
+    db_session.commit()
+    provider = EmptyProvider()
+
+    with pytest.raises(RateLimitExceeded):
+        run_ingestion(
+            db_session,
+            "adzuna",
+            provider,
+            JobSearchQuery(keywords="test", location="test"),
+            claim.id,
+        )
+
+    db_session.refresh(claim)
+    assert claim.status == "failed"
+    assert claim.provider_name == "adzuna"
+    assert db_session.execute(
+        text("SELECT COUNT(*) FROM provider_usage WHERE provider_name = 'jooble'")
+    ).scalar_one() == 0

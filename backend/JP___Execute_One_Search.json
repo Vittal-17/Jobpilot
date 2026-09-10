@@ -41,7 +41,7 @@
             "options": {"caseSensitive": true, "typeValidation": "strict"},
             "conditions": [
               {
-                "leftValue": "={{ $json.intent !== null && Number.isInteger($json.execution_id) && $json.intent.execution_id === $json.execution_id }}",
+                "leftValue": "={{ $json.intent !== null && Number.isInteger($json.execution_id) && $json.intent.execution_id === $json.execution_id && $json.intent.provider === $json.provider }}",
                 "rightValue": true,
                 "operator": {"type": "boolean", "operation": "true", "singleValue": true}
               }

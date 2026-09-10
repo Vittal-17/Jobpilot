@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 class JobSearchQuery(BaseModel):
     keywords: str = Field(..., min_length=1, max_length=100)
@@ -16,6 +16,7 @@ class JobSearchQuery(BaseModel):
 
 
 from pydantic import ConfigDict
+from app.providers.types import ProviderName
 
 class CanonicalSearchIntent(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -25,6 +26,7 @@ class CanonicalSearchIntent(BaseModel):
     location: str = Field(..., min_length=1, max_length=100)
     priority: int | None = Field(None, ge=1, le=3)
     execution_id: int | None = Field(None, gt=0)
+    provider: ProviderName | None = None
 
     @field_validator('role_id', 'keywords', 'location_id', 'location')
     @classmethod
@@ -32,6 +34,12 @@ class CanonicalSearchIntent(BaseModel):
         if not v.strip():
             raise ValueError("Field cannot be empty or whitespace only")
         return v.strip()
+
+    @model_validator(mode="after")
+    def provider_requires_execution(self):
+        if self.provider is not None and self.execution_id is None:
+            raise ValueError("Provider is server-routed only for selected executions")
+        return self
 
 class IngestionResult(BaseModel):
     provider: str

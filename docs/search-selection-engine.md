@@ -1,10 +1,18 @@
-# Search Selection Engine (005.7)
+# Search Selection and Provider Routing (005.7 / 005.7B)
 
 ## Ownership and boundary
 
-FastAPI owns the authoritative taxonomy in `backend/app/domain/taxonomy.py`, candidate generation, deterministic ranking, freshness, execution correlation, and provider execution. PostgreSQL owns durable history and claim/state constraints. n8n only calls the two authenticated internal endpoints and never receives provider credentials.
+FastAPI owns the authoritative taxonomy, candidate selection, provider routing, execution correlation, and provider execution. PostgreSQL owns durable history, quota usage, and claim/state constraints. n8n only calls the two authenticated internal endpoints and never receives provider credentials.
 
 Selection performs no provider request and no insert or update against `provider_usage`, `provider_state`, or `provider_minute_usage`. Its quota read is advisory. `run_ingestion()` remains the final authority and atomically reserves quota immediately before a provider request; it can reject an intent if capacity was consumed after selection.
+
+## Provider routing (005.7B)
+
+After 005.7 claims one candidate, FastAPI routes that claim to exactly one enabled, validly configured provider. The v1 order is explicit provider priority (`adzuna`, then `jooble`), constrained remaining minute/daily/lifetime capacity descending, then canonical provider name ascending. Priority is authoritative; capacity and name make ranking explicit within equal-priority providers. Routing calls each provider's local `validate_config()` but performs no HTTP request.
+
+The decision is persisted in the existing nullable `search_execution.provider_name` while status remains `selected`. `select-next` returns the same provider both at the response top level and inside the intent. n8n forwards the intent unchanged. The executor verifies that the requested provider equals the persisted decision and transitions to `started` only with that provider; it never accepts an arbitrary override and never falls back to another provider.
+
+Routing reads the same effective minute, daily, and lifetime limits used by 005.6 (`min(provider ceiling, account ceiling, safety budget)`) and current PostgreSQL usage. It never writes quota. A concurrent worker may consume the observed capacity before execution; this expected race produces a clean 429 from the authoritative atomic reservation and a failed execution, not rerouting or a second provider call.
 
 ## Candidates and ranking
 
@@ -28,7 +36,7 @@ History distinguishes selection, start, success, and failure. Metrics are nullab
 
 ## Correlation and state machine
 
-`POST /ingestion/internal/select-next` returns at most one canonical intent and one database-generated `execution_id`. The same ID is included inside the intent. When `/ingestion/internal/search` receives an ID, the row must exist, be `selected`, and match the authoritative role, location, keywords, and priority represented by its `candidate_id`. Unknown IDs return 404; stale, terminal, or mismatched IDs return 409.
+`POST /ingestion/internal/select-next` returns at most one canonical intent, one database-generated `execution_id`, and one provider decision. The same ID and provider are included inside the intent. When `/ingestion/internal/search` receives an ID, the row must exist, be `selected`, match the authoritative candidate, and already be routed to the supplied provider. Unknown IDs return 404; stale, terminal, candidate-mismatched, or provider-mismatched IDs return 409.
 
 Allowed state transitions are compare-and-set updates:
 
@@ -47,4 +55,4 @@ Every executor transition updates only a row in the expected prior state and req
 
 ## API and current scope
 
-Both internal endpoints require `X-Api-Key`. Responses and logs do not include provider keys or authorization headers. The current selector/executor targets Adzuna only, matching the 005.6 milestone. Jooble remains available through its legacy authenticated endpoint. Weekly and monthly quota values are policy metadata and are not actively reserved in 005.6A.
+Both internal endpoints require `X-Api-Key`. Responses and logs do not include provider keys or authorization headers. Both Adzuna and Jooble are eligible for the current canonical intent. Weekly and monthly quota values remain policy metadata and are not actively reserved in 005.6A or ranked in 005.7B.

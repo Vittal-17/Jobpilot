@@ -3,7 +3,8 @@ from datetime import datetime, timezone
 from sqlalchemy import text
 
 from app.core.config import settings
-from app.services.search_selector import get_provider_remaining_capacity
+from app.providers.types import ProviderName
+from app.services.provider_router import get_provider_capacity
 
 
 def _set_usage(db_session, minute_count=0, daily_count=0):
@@ -40,7 +41,7 @@ def test_selector_reads_usage_without_mutating_quota(db_session, monkeypatch):
         db_session.execute(text("SELECT SUM(request_count) FROM provider_usage")).scalar(),
         db_session.execute(text("SELECT SUM(lifetime_count) FROM provider_state")).scalar(),
     )
-    assert get_provider_remaining_capacity(db_session, "adzuna", now) is True
+    assert get_provider_capacity(db_session, ProviderName.ADZUNA, now).available is True
     after = (
         db_session.execute(text("SELECT SUM(request_count) FROM provider_minute_usage")).scalar(),
         db_session.execute(text("SELECT SUM(request_count) FROM provider_usage")).scalar(),
@@ -51,13 +52,13 @@ def test_selector_reads_usage_without_mutating_quota(db_session, monkeypatch):
 
 def test_selector_blocks_actual_minute_usage_at_limit(db_session):
     now = _set_usage(db_session, minute_count=25)
-    assert get_provider_remaining_capacity(db_session, "adzuna", now) is False
+    assert get_provider_capacity(db_session, ProviderName.ADZUNA, now).available is False
 
 
 def test_selector_blocks_actual_daily_usage_at_effective_limit(db_session, monkeypatch):
     monkeypatch.setattr(settings, "adzuna_safety_budget_daily", 2)
     now = _set_usage(db_session, daily_count=2)
-    assert get_provider_remaining_capacity(db_session, "adzuna", now) is False
+    assert get_provider_capacity(db_session, ProviderName.ADZUNA, now).available is False
 
 
 def test_selector_blocks_actual_lifetime_usage_at_limit(db_session, monkeypatch):
@@ -70,4 +71,4 @@ def test_selector_blocks_actual_lifetime_usage_at_limit(db_session, monkeypatch)
         )
     )
     db_session.commit()
-    assert get_provider_remaining_capacity(db_session, "jooble") is False
+    assert get_provider_capacity(db_session, ProviderName.JOOBLE).available is False

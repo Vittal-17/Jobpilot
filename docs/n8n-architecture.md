@@ -342,8 +342,9 @@ Stop implementation if during any phase:
 
 ### Workflow 3: JP - Execute One Search
 - **Trigger**: Manual and inactive by default.
-- **Flow**: `POST /ingestion/internal/select-next` -> validate candidate/`execution_id` -> if candidate exists, send the returned `intent` unchanged to `POST /ingestion/internal/search`; otherwise terminate at `No Candidate`.
+- **Flow**: `POST /ingestion/internal/select-next` -> validate candidate/`execution_id`/provider correlation -> if candidate exists, send the returned `intent` unchanged to `POST /ingestion/internal/search`; otherwise terminate at `No Candidate`.
 - **Boundedness**: One trigger performs at most one selection and one execution. There are no loops or automatic retries.
 - **Credentials**: Both HTTP nodes use the existing FastAPI header credential. n8n contains no Adzuna or Jooble key.
 - **Quota**: Selection only reads availability. FastAPI reserves quota atomically in the executor and may return 429 if the advisory selection became stale.
+- **Provider policy**: FastAPI selects and persists exactly one provider. n8n neither names nor ranks providers and performs no automatic fallback.
 - **Artifact**: `backend/JP___Execute_One_Search.json` is the importable workflow export and mirrors the installed local workflow. Provider execution was not invoked during 005.7 verification.

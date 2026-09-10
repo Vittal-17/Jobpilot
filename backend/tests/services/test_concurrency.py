@@ -23,10 +23,6 @@ def test_real_postgres_same_candidate_claim_contention(monkeypatch):
         tier=0,
     )
     monkeypatch.setattr(
-        "app.services.search_selector.get_provider_remaining_capacity",
-        lambda db, provider, reference_time=None: True,
-    )
-    monkeypatch.setattr(
         "app.services.search_selector.generate_candidates", lambda: [candidate]
     )
 
@@ -87,10 +83,6 @@ def test_active_claim_blocks_started_state(monkeypatch):
         location_canonical="Test Location 2",
         priority=1,
         tier=0,
-    )
-    monkeypatch.setattr(
-        "app.services.search_selector.get_provider_remaining_capacity",
-        lambda db, provider, reference_time=None: True,
     )
     monkeypatch.setattr(
         "app.services.search_selector.generate_candidates", lambda: [candidate]

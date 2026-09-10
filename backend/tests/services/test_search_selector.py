@@ -31,10 +31,8 @@ def test_never_searched_candidate_outranks_previous_success():
     assert worst_never < best_previous
 
 
-@patch("app.services.search_selector.get_provider_remaining_capacity")
 @patch("app.services.search_selector._clean_abandoned_claims")
-def test_select_next_search_all_fresh(mock_clean, mock_cap):
-    mock_cap.return_value = True
+def test_select_next_search_all_fresh(mock_clean):
 
     # Mock DB where ALL candidates were selected very recently (1 minute ago)
     db_mock = MagicMock()
@@ -55,18 +53,6 @@ def test_select_next_search_all_fresh(mock_clean, mock_cap):
     result = select_next_search(db_mock)
     assert result.candidate is None
     assert result.reason == "all_candidates_ineligible_or_fresh"
-
-@patch("app.services.search_selector.get_provider_remaining_capacity")
-@patch("app.services.search_selector._clean_abandoned_claims")
-def test_select_next_search_quota_exhausted(mock_clean, mock_cap):
-    # Adzuna quota is exhausted
-    mock_cap.return_value = False
-
-    db_mock = MagicMock()
-    result = select_next_search(db_mock)
-    assert result.candidate is None
-    assert result.reason == "quota_exhausted"
-
 
 def test_clean_abandoned_claims_preserves_history():
     from app.db.database import SessionLocal
@@ -115,10 +101,6 @@ def test_select_next_search_does_not_swallow_arbitrary_integrity_error(monkeypat
         location_canonical="Test Location",
         priority=1,
         tier=0,
-    )
-    monkeypatch.setattr(
-        "app.services.search_selector.get_provider_remaining_capacity",
-        lambda db, provider, reference_time=None: True,
     )
     monkeypatch.setattr(
         "app.services.search_selector.generate_candidates", lambda: [candidate]
