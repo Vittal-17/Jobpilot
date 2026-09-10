@@ -15,7 +15,11 @@ logger = logging.getLogger(__name__)
 ABANDONED_CLAIM_MINUTES = 15
 SUCCESS_COOLDOWN_HOURS = 24
 
+class CycleBudgetExhausted(Exception):
+    pass
+
 class SelectionResult(BaseModel):
+    action: str = 'execute'
     execution_id: Optional[int] = None
     candidate: Optional[SearchCandidate]
     reason: str
@@ -111,8 +115,11 @@ def select_next_search(
     db: Session,
     reference_time: datetime | None = None,
     before_claim: Callable[[SearchCandidate], None] | None = None,
+    cycle_id: str | None = None,
 ) -> SelectionResult:
-    """Deterministically selects exactly ONE search candidate."""
+    """Deterministically selects exactly ONE search candidate.
+    If cycle_id is None, it falls back to legacy single-search behavior without budget limits.
+    """
     now = reference_time or datetime.now(timezone.utc)
 
     # 1. Clean abandoned claims so they don't permanently poison candidates
@@ -157,38 +164,58 @@ def select_next_search(
         eligible.append((score, c))
 
     if not eligible:
-        return SelectionResult(candidate=None, reason="all_candidates_ineligible_or_fresh")
+        return SelectionResult(action="stop", candidate=None, reason="all_candidates_ineligible_or_fresh")
 
     # Sort by score ascending, then by deterministic candidate ID
     eligible.sort(key=lambda x: (x[0], x[1].candidate_id))
 
     # 5. Concurrency-safe claim mechanism
+    from app.core.config import settings
+
     for score, candidate in eligible:
         if before_claim:
             before_claim(candidate)
         try:
-            # Create a savepoint
             with db.begin_nested():
+                # Atomic Budget Reservation
+                if cycle_id is not None:
+                    stmt = text("""
+                        INSERT INTO search_cycle_usage (cycle_id, execution_count)
+                        VALUES (:id, 1)
+                        ON CONFLICT (cycle_id)
+                        DO UPDATE SET execution_count = search_cycle_usage.execution_count + 1
+                        RETURNING execution_count
+                    """)
+                    count = db.execute(stmt, {"id": cycle_id}).scalar_one()
+                    if count > settings.cycle_budget:
+                        raise CycleBudgetExhausted()
+
+                # Create Execution Claim
                 claim = SearchExecutionModel(
                     candidate_id=candidate.candidate_id,
                     status='selected',
-                    selected_at=now
+                    selected_at=now,
+                    cycle_id=cycle_id
                 )
                 db.add(claim)
+                db.flush() # Force IntegrityError if concurrent insert
+            # Savepoint committed successfully
             db.commit()
-            return SelectionResult(candidate=candidate, reason="highest_ranked_eligible", score=score, execution_id=claim.id)
+            return SelectionResult(action="execute", candidate=candidate, reason="highest_ranked_eligible", score=score, execution_id=claim.id)
+
+        except CycleBudgetExhausted:
+            # Savepoint automatically rolled back. Budget hit.
+            return SelectionResult(action="stop", candidate=None, reason="cycle_budget_exhausted")
         except IntegrityError as exc:
-            # Partial unique constraint 'uq_active_claim' blocked us.
-            # Another worker claimed it. Try the next best candidate.
-            db.rollback()
+            # Savepoint automatically rolled back. Candidate claimed by another worker.
             if getattr(exc.orig, "sqlstate", None) != "23505":
                 raise
+            continue
         except Exception:
-            db.rollback()
             logger.exception(
                 "Failed to claim search candidate candidate_id=%s",
                 candidate.candidate_id,
             )
             raise
 
-    return SelectionResult(candidate=None, reason="all_eligible_candidates_claimed_by_others")
+    return SelectionResult(action="stop", candidate=None, reason="all_eligible_candidates_claimed_by_others")

@@ -32,8 +32,8 @@ def ingest_adzuna(query: JobSearchQuery, db: Session = Depends(get_db)):
         provider = create_provider(ProviderName.ADZUNA)
     except HTTPException:
         raise
-    except Exception:
-        raise HTTPException(status_code=500, detail="Internal server error")
+    except Exception as e:
+        import traceback; traceback.print_exc(); raise HTTPException(status_code=500, detail="Internal server error")
 
     from app.providers.exceptions import ProviderConfigurationError
     try:
@@ -58,8 +58,8 @@ def ingest_jooble(query: JobSearchQuery, db: Session = Depends(get_db)):
         provider = create_provider(ProviderName.JOOBLE)
     except HTTPException:
         raise
-    except Exception:
-        raise HTTPException(status_code=500, detail="Internal server error")
+    except Exception as e:
+        import traceback; traceback.print_exc(); raise HTTPException(status_code=500, detail="Internal server error")
 
     from app.providers.exceptions import ProviderConfigurationError
     try:
@@ -149,12 +149,17 @@ def internal_execute_search(intent: CanonicalSearchIntent, db: Session = Depends
         raise HTTPException(status_code=500, detail="Provider configuration error")
     except HTTPException:
         raise
-    except Exception:
-        raise HTTPException(status_code=500, detail="Internal server error")
+    except Exception as e:
+        import traceback; traceback.print_exc(); raise HTTPException(status_code=500, detail="Internal server error")
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+class CycleContext(BaseModel):
+    cycle_id: str | None = Field(None, max_length=64, min_length=1, pattern=r"^\S(.*\S)?$")
 
 class SelectionResponse(BaseModel):
+    action: str = 'execute'
+    cycle_id: str | None = None
     execution_id: int | None = None
     intent: CanonicalSearchIntent | None = None
     candidate_id: str | None = None
@@ -188,7 +193,7 @@ def _best_effort_close_routing_claim(
         )
 
 @router.post("/internal/select-next", response_model=SelectionResponse, dependencies=[Depends(verify_api_key)])
-def select_next_search_endpoint(db: Session = Depends(get_db)):
+def select_next_search_endpoint(context: CycleContext | None = None, db: Session = Depends(get_db)):
     from app.services.search_selector import select_next_search
     from app.services.provider_router import (
         ProviderNotConfigured,
@@ -198,7 +203,8 @@ def select_next_search_endpoint(db: Session = Depends(get_db)):
         route_provider,
     )
     try:
-        result = select_next_search(db)
+        cycle_id = context.cycle_id if context else None
+        result = select_next_search(db, cycle_id=cycle_id)
         if result.candidate:
             try:
                 provider_decision = route_provider(db)
@@ -250,6 +256,8 @@ def select_next_search_endpoint(db: Session = Depends(get_db)):
                 provider=provider_decision.provider,
             )
             return SelectionResponse(
+                action="execute",
+                cycle_id=cycle_id,
                 intent=intent,
                 execution_id=result.execution_id,
                 candidate_id=result.candidate.candidate_id,
@@ -262,6 +270,8 @@ def select_next_search_endpoint(db: Session = Depends(get_db)):
             )
         else:
             return SelectionResponse(
+                action="stop",
+                cycle_id=cycle_id,
                 intent=None,
                 execution_id=None,
                 candidate_id=None,

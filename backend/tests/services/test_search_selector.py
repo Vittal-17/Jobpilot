@@ -118,14 +118,17 @@ def test_select_next_search_does_not_swallow_arbitrary_integrity_error(monkeypat
             return Context()
         def add(self, obj):
             pass
-        def commit(self):
+        def flush(self):
             raise IntegrityError("Mock generic integrity error", params=[], orig=MockOrig())
+        def commit(self):
+            pass
         def rollback(self):
             pass
         def execute(self, *args, **kwargs):
             class MockResult:
                 rowcount = 0
                 def fetchall(self): return []
+                def scalar_one(self): return 1
             return MockResult()
 
 

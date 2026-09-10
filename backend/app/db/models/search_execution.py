@@ -4,13 +4,22 @@ from sqlalchemy import String, Integer, DateTime, Index, CheckConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 
+
+class SearchCycleUsageModel(Base):
+    __tablename__ = "search_cycle_usage"
+
+    cycle_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    execution_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
 class SearchExecutionModel(Base):
+
     __tablename__ = "search_execution"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     candidate_id: Mapped[str] = mapped_column(String(100), nullable=False)
     status: Mapped[str] = mapped_column(String(20), nullable=False) # 'selected', 'started', 'succeeded', 'failed'
     provider_name: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    cycle_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     selected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -25,6 +34,7 @@ class SearchExecutionModel(Base):
 
     __table_args__ = (
         Index("idx_search_execution_candidate", "candidate_id"),
+        Index("idx_search_execution_cycle", "cycle_id"),
         Index("idx_search_execution_status", "status"),
         Index(
             "uq_active_claim",

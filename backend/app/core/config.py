@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     environment: str = "development"
 
     api_secret_key: str
+    cycle_budget: int = 20
 
     @field_validator('api_secret_key')
     @classmethod
