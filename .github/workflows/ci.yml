@@ -17,13 +17,13 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_USER: jobpilot_test
-          POSTGRES_PASSWORD: test_password
-          POSTGRES_DB: jobpilot_test
+          POSTGRES_USER: jobpilot
+          POSTGRES_PASSWORD: jobpilot_pass
+          POSTGRES_DB: jobpilot
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U jobpilot_test -d jobpilot_test"
+          --health-cmd "pg_isready -U jobpilot -d jobpilot"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -47,6 +47,6 @@ jobs:
       - name: Run Pytest
         env:
           API_SECRET_KEY: test-ci-secret-key-minimum-16
-          TEST_DATABASE_URL: postgresql+psycopg://jobpilot_test:test_password@localhost:5432/jobpilot_test
+          TEST_DATABASE_URL: postgresql+psycopg://jobpilot:jobpilot_pass@localhost:5432/jobpilot_test
           PYTHONPATH: backend
         run: pytest tests/ -q
