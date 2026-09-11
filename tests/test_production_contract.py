@@ -371,3 +371,39 @@ def test_cd_workflow_exists_and_secure():
     # Uses GITHUB_TOKEN
     login_step = next(s for s in steps if "login-action" in s.get("uses", ""))
     assert "secrets.GITHUB_TOKEN" in login_step["with"]["password"]
+
+    # Verify pull-before-inspect invariant
+    verify_step = next(s for s in steps if s.get("name") == "Verify Image Architecture and SHA")
+    run_script = verify_step["run"]
+
+    # Must use set -e to fail closed
+    assert "set -e" in run_script
+
+    # Must pull the exact image reference
+    assert "docker pull" in run_script
+
+    # Must fail closed on exact key match
+    assert "awk -F= '$1==\"APP_COMMIT_SHA\"" in run_script
+
+    # Verify digest hardening
+    assert build_step.get("id") == "build_push"
+    assert "steps.build_push.outputs.digest" in run_script
+
+    # Must explicitly fail if digest is empty
+    assert 'if [ -z "$PUBLISHED_DIGEST" ]; then' in run_script
+    assert 'exit 1' in run_script.split('if [ -z "$PUBLISHED_DIGEST" ]; then')[1].split('fi')[0]
+
+    # Must not silently skip
+    assert 'if [ -n "$PUBLISHED_DIGEST" ]; then' not in run_script
+
+    # Must inspect RepoDigests securely
+    assert '.RepoDigests' in run_script
+
+    # Must enforce cardinality
+    assert "head -n 1" not in run_script
+    assert "wc -l" in run_script
+    assert "-eq 0" in run_script
+    assert "-gt 1" in run_script
+
+    # Exact comparison
+    assert "$PULLED_DIGEST\" != \"$PUBLISHED_DIGEST" in run_script

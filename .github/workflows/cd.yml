@@ -39,6 +39,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push Docker image
+        id: build_push
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: ./backend
@@ -52,18 +53,52 @@ jobs:
 
       - name: Verify Image Architecture and SHA
         run: |
-          # Inspect the pulled image architecture
-          ARCH=$(docker inspect ghcr.io/${{ steps.repo_owner.outputs.owner }}/jobpilot-fastapi:${{ github.event.workflow_run.head_sha }} --format '{{.Architecture}}')
+          set -euo pipefail
+
+          IMAGE_REF="ghcr.io/${{ steps.repo_owner.outputs.owner }}/jobpilot-fastapi:${{ github.event.workflow_run.head_sha }}"
+
+          echo "Pulling published image: $IMAGE_REF"
+          docker pull "$IMAGE_REF"
+
+          echo "Verifying architecture..."
+          ARCH=$(docker inspect "$IMAGE_REF" --format '{{.Architecture}}')
           if [ "$ARCH" != "arm64" ]; then
             echo "Error: Image architecture is $ARCH, expected arm64"
             exit 1
           fi
 
-          # Inspect the APP_COMMIT_SHA variable inside the image
-          SHA_ENV=$(docker inspect ghcr.io/${{ steps.repo_owner.outputs.owner }}/jobpilot-fastapi:${{ github.event.workflow_run.head_sha }} --format '{{range .Config.Env}}{{println .}}{{end}}' | grep '^APP_COMMIT_SHA=' | cut -d= -f2)
+          echo "Verifying exact commit SHA in environment..."
+          SHA_ENV=$(docker inspect "$IMAGE_REF" --format '{{range .Config.Env}}{{println .}}{{end}}' | awk -F= '$1=="APP_COMMIT_SHA" {print $2}')
           if [ "$SHA_ENV" != "${{ github.event.workflow_run.head_sha }}" ]; then
             echo "Error: APP_COMMIT_SHA environment variable is $SHA_ENV, expected ${{ github.event.workflow_run.head_sha }}"
             exit 1
           fi
 
+          echo "Verifying published digest..."
+          PUBLISHED_DIGEST="${{ steps.build_push.outputs.digest }}"
+          if [ -z "$PUBLISHED_DIGEST" ]; then
+            echo "Error: Published digest from build-push-action is empty."
+            exit 1
+          fi
+
+          REPO_PREFIX="ghcr.io/${{ steps.repo_owner.outputs.owner }}/jobpilot-fastapi@"
+          PULLED_DIGESTS=$(docker inspect "$IMAGE_REF" --format '{{range .RepoDigests}}{{println .}}{{end}}' | awk -v prefix="$REPO_PREFIX" 'index($0, prefix) == 1 {print substr($0, length(prefix) + 1)}')
+
+          DIGEST_COUNT=$(echo "$PULLED_DIGESTS" | awk 'NF' | wc -l)
+          if [ "$DIGEST_COUNT" -eq 0 ]; then
+            echo "Error: No RepoDigest found for pulled image."
+            exit 1
+          elif [ "$DIGEST_COUNT" -gt 1 ]; then
+            echo "Error: Found multiple RepoDigests matching prefix. Cannot safely verify."
+            exit 1
+          fi
+
+          PULLED_DIGEST=$(echo "$PULLED_DIGESTS" | tr -d '[:space:]')
+
+          if [ "$PULLED_DIGEST" != "$PUBLISHED_DIGEST" ]; then
+            echo "Error: Pulled digest '$PULLED_DIGEST' does not match published digest '$PUBLISHED_DIGEST'"
+            exit 1
+          fi
+
+          echo "Digest verification passed: $PULLED_DIGEST"
           echo "Image verification passed."
