@@ -285,3 +285,28 @@ def test_caddy_is_edge_proxy_no_trusted_proxies():
 
     # Prove trusted_proxies is completely absent, cementing Caddy as the edge.
     assert "trusted_proxies" not in caddyfile, "Caddy must not trust external proxies in the current topology"
+
+
+def test_gitignore_protects_env():
+    with open(".gitignore", "r") as f:
+        ignore = f.read()
+    assert ".env" in ignore, ".env must be ignored"
+    assert ".env.*" in ignore, ".env.* must be ignored"
+    assert "!.env.example" in ignore, ".env.example must NOT be ignored"
+
+def test_db_setup_argv_protection():
+    import yaml
+    with open("docker-compose.production.yml", "r") as f:
+        compose = yaml.safe_load(f)
+    db_setup = compose["services"]["db-setup"]
+    command_block = db_setup.get("command", [])
+
+    # Flatten if list
+    cmd_str = str(command_block)
+
+    # The password must NOT appear interpolated via -v password_val=$$N8N_DB_PASSWORD
+    assert "-v password_val=" not in cmd_str
+    assert "-v password_val=\"" not in cmd_str
+
+    # Must use \getenv
+    assert "getenv password_val N8N_DB_PASSWORD" in cmd_str or "\\getenv password_val N8N_DB_PASSWORD" in cmd_str

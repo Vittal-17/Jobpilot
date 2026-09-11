@@ -34,7 +34,11 @@ PostgreSQL (Source of Truth)
 ### n8n UI Protection (First-Boot Hijacking Prevention)
 - **First-Boot Vulnerability**: n8n (v1.0+) mandates User Management on the first visit. If exposed publicly, an attacker could hijack the Owner account.
 - **Mitigation**: Caddy restricts access using a `basic_auth` block for all paths except `/webhook/*` and `/webhook-test/*`.
-- **Configuration**: The `CADDY_ADMIN_USER` and `CADDY_ADMIN_HASH` variables in `.env` secure the UI. Generate the bcrypt hash using: `docker run --rm caddy:2.8-alpine caddy hash-password --plaintext "your_secure_password"`.
+- **Configuration**: The `CADDY_ADMIN_USER` and `CADDY_ADMIN_HASH` variables in `.env` secure the UI. Generate the bcrypt hash using an interactive prompt to prevent shell history leakage:
+  ```bash
+  docker run -it --rm caddy:2.8-alpine caddy hash-password
+  ```
+  *Never store the plaintext password in Git or your `.env` file.*
 
 ### Proxy Trust Headers
 - **X-Forwarded-For Protection**: n8n must know Caddy is a trusted proxy to correctly resolve client IPs (essential for webhook IP restrictions and rate limiting). This is strictly mapped via `N8N_PROXY_HOPS=1`.
@@ -77,6 +81,27 @@ Data is stored securely on Docker managed volumes with explicit stable names. Av
 
 ## Production Environment Variables
 Do not reuse `.env` from development. Use `.env.example` as a template for production.
+
+### Secure File Permissions Contract
+The `.env` file is a localized plaintext secret storage mechanism suitable for $0 infrastructure. The deployment operator **must** protect this file using Unix filesystem permissions.
+
+### Configuration Loading & Precedence
+The deployment pipeline requires no 3rd-party Python dependencies (like `python-dotenv`). It implements a strict, native parser that:
+- Natively loads `.env` files matching the `KEY=value` or `KEY="value"` syntax.
+- Completely ignores comments (`#`) and empty lines.
+- Does **not** perform shell evaluation, parameter expansion (`$VAR`), or command substitution.
+- Safely overlays process environment variables (process environment overrides `.env` values natively, matching Docker Compose semantics).
+
+Because process variables override the `.env` file, CI/CD runners can safely inject environment credentials entirely in-memory without needing to write a `.env` file to disk. Manual `export` of variables by the operator is NOT required when a local `.env` file is present.
+- **Location**: On the VPS deployment root.
+- **Permissions**: `0600` is the normal recommended baseline, though stricter permissions such as `0400` are acceptable. The file must not be group or world accessible.
+- **Ownership**: Must be owned by the user account responsible for deployment (e.g. `chown deploy_user:deploy_group .env`).
+- **Placeholder Rejection**: The deployment engine strictly refuses to run if any required secret is missing, empty, or contains `__REPLACE_WITH`.
+
+### Secret Lifecycle & Recovery
+- **N8N_ENCRYPTION_KEY**: This is a persistent security-critical secret. It must remain stable. Encrypted credential data may become unusable if lost or changed, and recovery may require credential reconfiguration. Do not auto-regenerate. Do not rotate during ordinary deployment. Maintain a secure recovery copy outside Git.
+- **Database Password Rotation**: Changing `POSTGRES_PASSWORD` in `.env` alone will NOT automatically rotate the already-initialized PostgreSQL superuser password on an existing data volume. Safe rotation requires a manual `ALTER USER ... WITH PASSWORD ...` execution against the live database, synchronized with the `.env` update.
+- **Provider Secrets**: `ADZUNA_*` and `JOOBLE_*` credentials belong exclusively to FastAPI. They are safely decoupled from n8n and Caddy.
 
 **VPS-Only Secrets (Never commit):**
 - `POSTGRES_PASSWORD`, `N8N_DB_PASSWORD`

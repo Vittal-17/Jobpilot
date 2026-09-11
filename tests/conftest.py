@@ -1,4 +1,5 @@
 import os
+os.environ.setdefault("API_SECRET_KEY", "test-api-secret-key-for-pytest")
 import pytest
 import psycopg
 from sqlalchemy import create_engine

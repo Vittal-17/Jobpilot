@@ -109,7 +109,7 @@ def test_backup_directory_creation_and_deterministic_naming():
     with mock.patch("subprocess.run") as m_run, mock.patch("os.environ", {"POSTGRES_PASSWORD":"p", "POSTGRES_USER":"u", "POSTGRES_DB":"d"}):
         m_run.return_value.returncode = 0
         with mock.patch("os.path.getsize", return_value=100), mock.patch("builtins.open", mock.mock_open(read_data=b"dummy")), mock.patch("os.fsync"), mock.patch("os.rename"):
-            deploy.create_backup("a"*40, metadata)
+            deploy.create_backup("a"*40, metadata, {"POSTGRES_PASSWORD":"p", "POSTGRES_USER":"u", "POSTGRES_DB":"d"})
     assert os.path.exists("backups")
     assert metadata["backup"]["format"] == "custom"
     assert "checksum" in metadata["backup"]
@@ -121,7 +121,7 @@ def test_empty_backup_rejection():
         with mock.patch("os.path.getsize", return_value=0), mock.patch("builtins.open", mock.mock_open()):
             with mock.patch("os.remove"):
                 with pytest.raises(SystemExit):
-                    deploy.create_backup("a"*40, metadata)
+                    deploy.create_backup("a"*40, metadata, {"POSTGRES_PASSWORD":"p", "POSTGRES_USER":"u", "POSTGRES_DB":"d"})
 
 def test_pg_dump_failure_rejection():
     metadata = {}
@@ -131,7 +131,7 @@ def test_pg_dump_failure_rejection():
         with mock.patch("builtins.open", mock.mock_open()):
             with mock.patch("os.remove"):
                 with pytest.raises(SystemExit):
-                    deploy.create_backup("a"*40, metadata)
+                    deploy.create_backup("a"*40, metadata, {"POSTGRES_PASSWORD":"p", "POSTGRES_USER":"u", "POSTGRES_DB":"d"})
 
 def test_archive_integrity_validation_failure():
     metadata = {}
@@ -148,7 +148,7 @@ def test_archive_integrity_validation_failure():
         m_run.side_effect = side_effect
         with mock.patch("os.path.getsize", return_value=100), mock.patch("builtins.open", mock.mock_open(read_data=b"data")):
             with pytest.raises(SystemExit):
-                deploy.create_backup("a"*40, metadata)
+                deploy.create_backup("a"*40, metadata, {"POSTGRES_PASSWORD":"p", "POSTGRES_USER":"u", "POSTGRES_DB":"d"})
 
 def test_restore_verification_success_isolated():
     metadata = {"backup": {"file": "dummy.dump"}}
@@ -218,7 +218,7 @@ def test_migration_failure_stops_rollout():
             return m
         m_run.side_effect = side_effect
         with pytest.raises(SystemExit):
-            deploy.execute_migration(metadata)
+            deploy.execute_migration(metadata, {"POSTGRES_PASSWORD":"p", "POSTGRES_USER":"u", "POSTGRES_DB":"d"})
     assert metadata["phase"] == "failed"
 
 def test_alembic_multi_head_verification_succeeds():
@@ -235,7 +235,7 @@ def test_alembic_multi_head_verification_succeeds():
                 m.stdout = ""
             return m
         m_run.side_effect = side_effect
-        deploy.execute_migration(metadata)
+        deploy.execute_migration(metadata, {"POSTGRES_PASSWORD":"p", "POSTGRES_USER":"u", "POSTGRES_DB":"d"})
     assert metadata["phase"] == "migration_succeeded"
 
 def test_alembic_multi_head_verification_fails_on_extra_head():
@@ -253,7 +253,7 @@ def test_alembic_multi_head_verification_fails_on_extra_head():
             return m
         m_run.side_effect = side_effect
         with pytest.raises(SystemExit):
-            deploy.execute_migration(metadata)
+            deploy.execute_migration(metadata, {"POSTGRES_PASSWORD":"p", "POSTGRES_USER":"u", "POSTGRES_DB":"d"})
 
 def test_alembic_multi_head_verification_fails_on_missing_head():
     metadata = {}
@@ -270,7 +270,7 @@ def test_alembic_multi_head_verification_fails_on_missing_head():
             return m
         m_run.side_effect = side_effect
         with pytest.raises(SystemExit):
-            deploy.execute_migration(metadata)
+            deploy.execute_migration(metadata, {"POSTGRES_PASSWORD":"p", "POSTGRES_USER":"u", "POSTGRES_DB":"d"})
 
 
 def test_subprocess_argv_contains_no_passwords():
@@ -287,7 +287,7 @@ def test_subprocess_argv_contains_no_passwords():
                 m.stdout = ""
             return m
         m_run.side_effect = side_effect
-        deploy.execute_migration(metadata)
+        deploy.execute_migration(metadata, {"POSTGRES_PASSWORD":"p", "POSTGRES_USER":"u", "POSTGRES_DB":"d"})
         for call in m_run.call_args_list:
             cmd = " ".join(call[0][0])
             assert "super_secret_password" not in cmd
@@ -313,7 +313,7 @@ def test_backup_metadata_contains_no_secrets():
     with mock.patch("subprocess.run") as m_run, mock.patch("os.environ", {"POSTGRES_PASSWORD":"super_secret_password", "POSTGRES_USER":"u", "POSTGRES_DB":"d"}):
         m_run.return_value.returncode = 0
         with mock.patch("os.path.getsize", return_value=100), mock.patch("builtins.open", mock.mock_open(read_data=b"data")), mock.patch("os.fsync"), mock.patch("os.rename"):
-            deploy.create_backup(sha, metadata)
+            deploy.create_backup(sha, metadata, {"POSTGRES_PASSWORD":"p", "POSTGRES_USER":"u", "POSTGRES_DB":"d"})
     # Since open was mocked, we can't read the file. The metadata object holds the values.
     assert "super_secret_password" not in json.dumps(metadata)
 
@@ -329,7 +329,7 @@ def test_no_automatic_alembic_downgrade_occurs():
             return m
         m_run.side_effect = side_effect
         with mock.patch("os.environ", {"POSTGRES_PASSWORD":"p", "POSTGRES_USER":"u", "POSTGRES_DB":"d"}):
-            deploy.execute_migration({})
+            deploy.execute_migration({}, {"POSTGRES_PASSWORD":"p", "POSTGRES_USER":"u", "POSTGRES_DB":"d"})
     # Check that 'alembic downgrade' was never called
     for call in m_run.call_args_list:
         cmd = " ".join(call[0][0])
@@ -348,7 +348,7 @@ def test_migration_invocations_use_no_build():
                 m.stdout = ""
             return m
         m_run.side_effect = side_effect
-        deploy.execute_migration(metadata)
+        deploy.execute_migration(metadata, {"POSTGRES_PASSWORD":"p", "POSTGRES_USER":"u", "POSTGRES_DB":"d"})
 
         # Check all alembic calls
         alembic_calls = 0
@@ -365,7 +365,7 @@ def test_backup_fails_safely_on_collision():
     metadata = {}
     with mock.patch("os.open", side_effect=FileExistsError("File exists")):
         with pytest.raises(SystemExit):
-            deploy.create_backup("a"*40, metadata)
+            deploy.create_backup("a"*40, metadata, {"POSTGRES_PASSWORD":"p", "POSTGRES_USER":"u", "POSTGRES_DB":"d"})
 
 import multiprocessing
 import time
@@ -424,3 +424,109 @@ def test_domain_validation():
     assert is_valid_acme_domain("jobpilot.example.com-") is False
     assert is_valid_acme_domain("a" * 64 + ".com") is False  # Label too long
     assert is_valid_acme_domain("local") is False  # No TLD
+
+
+def test_placeholder_credential_rejection():
+    from scripts.deploy import validate_secrets
+    import pytest
+
+    # Mock valid environment configuration mapping
+    config = {
+        "API_SECRET_KEY": "valid",
+        "POSTGRES_PASSWORD": "valid",
+        "N8N_DB_PASSWORD": "valid",
+        "N8N_ENCRYPTION_KEY": "valid",
+        "CADDY_ADMIN_HASH": "valid",
+        "CADDY_ADMIN_USER": "valid",
+        "DOMAIN": "jobpilot.example.com",
+        "ACME_EMAIL": "test@example.com",
+        "POSTGRES_DB": "valid",
+        "POSTGRES_USER": "valid",
+        "N8N_DB_NAME": "valid",
+        "N8N_DB_USER": "valid"
+    }
+
+    # Verify success
+    validate_secrets(config)
+
+    # Missing required
+    c2 = dict(config)
+    del c2["API_SECRET_KEY"]
+    with pytest.raises(SystemExit):
+        validate_secrets(c2)
+
+    # Empty required
+    c2 = dict(config)
+    c2["API_SECRET_KEY"] = "   "
+    with pytest.raises(SystemExit):
+        validate_secrets(c2)
+
+    # Placeholder required
+    c2 = dict(config)
+    c2["API_SECRET_KEY"] = "__REPLACE_WITH_SECRET__"
+    with pytest.raises(SystemExit):
+        validate_secrets(c2)
+
+    # Placeholder optional
+    c2 = dict(config)
+    c2["ADZUNA_APP_KEY"] = "__REPLACE_WITH_KEY__"
+    with pytest.raises(SystemExit):
+        validate_secrets(c2)
+
+def test_env_parser_and_permissions(tmp_path, monkeypatch):
+    from scripts.deploy import load_production_env, resolve_effective_config
+    import os
+    import pytest
+
+    env_file = tmp_path / ".env"
+
+    # 1. Test .env parsing handles quotes, equals signs, comments
+    env_file.write_text("""# A comment
+API_SECRET_KEY=valid
+POSTGRES_PASSWORD="valid_with_quotes"
+N8N_DB_PASSWORD='valid_single'
+N8N_ENCRYPTION_KEY=val=contains=equals
+
+CADDY_ADMIN_HASH=test
+""")
+
+    env_file.chmod(0o600)
+
+    original_cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        data = load_production_env(".env")
+        assert data["API_SECRET_KEY"] == "valid"
+        assert data["POSTGRES_PASSWORD"] == "valid_with_quotes"
+        assert data["N8N_DB_PASSWORD"] == "valid_single"
+        assert data["N8N_ENCRYPTION_KEY"] == "val=contains=equals"
+        assert data["CADDY_ADMIN_HASH"] == "test"
+
+        # 2. Test precedence (process env overrides .env)
+        process_env = {"API_SECRET_KEY": "overridden"}
+        config = resolve_effective_config(data, process_env)
+        assert config["API_SECRET_KEY"] == "overridden"
+        assert config["CADDY_ADMIN_HASH"] == "test"
+
+        # 3. Test duplicates fail closed
+        env_file.write_text("API_SECRET_KEY=a\nAPI_SECRET_KEY=b")
+        with pytest.raises(SystemExit):
+            load_production_env(".env")
+
+        # 4. Test malformed fails closed
+        env_file.write_text("API_SECRET_KEY")
+        with pytest.raises(SystemExit):
+            load_production_env(".env")
+
+        # 5. Test permissions fail closed (0644)
+        env_file.write_text("API_SECRET_KEY=a")
+        env_file.chmod(0o644)
+        with pytest.raises(SystemExit):
+            load_production_env(".env")
+
+        # 6. Test stricter permissions pass (0400)
+        env_file.chmod(0o400)
+        assert load_production_env(".env")["API_SECRET_KEY"] == "a"
+
+    finally:
+        os.chdir(original_cwd)

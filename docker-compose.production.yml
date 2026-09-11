@@ -29,10 +29,10 @@ services:
     image: caddy:2.8-alpine
     restart: unless-stopped
     environment:
-      DOMAIN: ${DOMAIN?DOMAIN must be set}
-      ACME_EMAIL: ${ACME_EMAIL?ACME_EMAIL must be set}
-      CADDY_ADMIN_USER: ${CADDY_ADMIN_USER?CADDY_ADMIN_USER must be set}
-      CADDY_ADMIN_HASH: ${CADDY_ADMIN_HASH?CADDY_ADMIN_HASH must be set}
+      DOMAIN: ${DOMAIN:?DOMAIN must be set}
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL must be set}
+      CADDY_ADMIN_USER: ${CADDY_ADMIN_USER:?CADDY_ADMIN_USER must be set}
+      CADDY_ADMIN_HASH: ${CADDY_ADMIN_HASH:?CADDY_ADMIN_HASH must be set}
     ports:
       - "80:80"
       - "443:443"
@@ -61,14 +61,14 @@ services:
       - DB_TYPE=postgresdb
       - DB_POSTGRESDB_HOST=db
       - DB_POSTGRESDB_PORT=5432
-      - DB_POSTGRESDB_DATABASE=${N8N_DB_NAME?N8N_DB_NAME must be set}
-      - DB_POSTGRESDB_USER=${N8N_DB_USER?N8N_DB_USER must be set}
-      - DB_POSTGRESDB_PASSWORD=${N8N_DB_PASSWORD?N8N_DB_PASSWORD must be set}
-      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY?N8N_ENCRYPTION_KEY must be set}
+      - DB_POSTGRESDB_DATABASE=${N8N_DB_NAME:?N8N_DB_NAME must be set}
+      - DB_POSTGRESDB_USER=${N8N_DB_USER:?N8N_DB_USER must be set}
+      - DB_POSTGRESDB_PASSWORD=${N8N_DB_PASSWORD:?N8N_DB_PASSWORD must be set}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY:?N8N_ENCRYPTION_KEY must be set}
       - N8N_PROXY_HOPS=1
       - N8N_PORT=5678
       - N8N_LISTEN_ADDRESS=0.0.0.0
-      - WEBHOOK_URL=https://${DOMAIN?DOMAIN must be set}/
+      - WEBHOOK_URL=https://${DOMAIN:?DOMAIN must be set}/
       - GENERIC_TIMEZONE=Asia/Kolkata
       - TZ=Asia/Kolkata
       - N8N_RUNNERS_TASK_TIMEOUT=30
@@ -110,10 +110,10 @@ services:
       - ENVIRONMENT=production
       - POSTGRES_HOST=db
       - POSTGRES_PORT=5432
-      - POSTGRES_USER=${POSTGRES_USER?POSTGRES_USER must be set}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD?POSTGRES_PASSWORD must be set}
-      - POSTGRES_DB=${POSTGRES_DB?POSTGRES_DB must be set}
-      - API_SECRET_KEY=${API_SECRET_KEY?API_SECRET_KEY must be set}
+      - POSTGRES_USER=${POSTGRES_USER:?POSTGRES_USER must be set}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      - POSTGRES_DB=${POSTGRES_DB:?POSTGRES_DB must be set}
+      - API_SECRET_KEY=${API_SECRET_KEY:?API_SECRET_KEY must be set}
       - ADZUNA_APP_ID=${ADZUNA_APP_ID:-}
       - ADZUNA_APP_KEY=${ADZUNA_APP_KEY:-}
       - ADZUNA_ENABLED=${ADZUNA_ENABLED:-true}
@@ -142,9 +142,9 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      - POSTGRES_USER=${POSTGRES_USER?POSTGRES_USER must be set}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD?POSTGRES_PASSWORD must be set}
-      - POSTGRES_DB=${POSTGRES_DB?POSTGRES_DB must be set}
+      - POSTGRES_USER=${POSTGRES_USER:?POSTGRES_USER must be set}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      - POSTGRES_DB=${POSTGRES_DB:?POSTGRES_DB must be set}
     volumes:
       - postgres_data:/var/lib/postgresql/data
     networks:
@@ -170,17 +170,23 @@ services:
       db:
         condition: service_healthy
     environment:
-      PGPASSWORD: ${POSTGRES_PASSWORD?POSTGRES_PASSWORD must be set}
-      N8N_DB_NAME: ${N8N_DB_NAME?N8N_DB_NAME must be set}
-      N8N_DB_USER: ${N8N_DB_USER?N8N_DB_USER must be set}
-      N8N_DB_PASSWORD: ${N8N_DB_PASSWORD?N8N_DB_PASSWORD must be set}
-      POSTGRES_USER: ${POSTGRES_USER?POSTGRES_USER must be set}
-      POSTGRES_DB: ${POSTGRES_DB?POSTGRES_DB must be set}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      N8N_DB_NAME: ${N8N_DB_NAME:?N8N_DB_NAME must be set}
+      N8N_DB_USER: ${N8N_DB_USER:?N8N_DB_USER must be set}
+      N8N_DB_PASSWORD: ${N8N_DB_PASSWORD:?N8N_DB_PASSWORD must be set}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB must be set}
     command:
       - sh
       - -c
       - |
         cat << "SQL" > setup.sql
+        \getenv user_name N8N_DB_USER
+        \getenv password_val N8N_DB_PASSWORD
+        \getenv db_name N8N_DB_NAME
+        \getenv app_db POSTGRES_DB
+        \getenv app_user POSTGRES_USER
+
         SELECT format($$$$CREATE USER %I WITH PASSWORD %L$$$$, :'user_name', :'password_val')
         WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = :'user_name') \gexec
 
@@ -194,7 +200,7 @@ services:
         REVOKE CONNECT ON DATABASE :"app_db" FROM PUBLIC;
         GRANT CONNECT ON DATABASE :"app_db" TO :"app_user";
         SQL
-        psql -h db -U "$$POSTGRES_USER" -d postgres -v user_name="$$N8N_DB_USER" -v password_val="$$N8N_DB_PASSWORD" -v db_name="$$N8N_DB_NAME" -v app_db="$$POSTGRES_DB" -v app_user="$$POSTGRES_USER" -f setup.sql
+        psql -h db -U "$$POSTGRES_USER" -d postgres -f setup.sql
 
   migration:
     build:
@@ -209,9 +215,9 @@ services:
       - ENVIRONMENT=production
       - POSTGRES_HOST=db
       - POSTGRES_PORT=5432
-      - POSTGRES_USER=${POSTGRES_USER?POSTGRES_USER must be set}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD?POSTGRES_PASSWORD must be set}
-      - POSTGRES_DB=${POSTGRES_DB?POSTGRES_DB must be set}
+      - POSTGRES_USER=${POSTGRES_USER:?POSTGRES_USER must be set}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      - POSTGRES_DB=${POSTGRES_DB:?POSTGRES_DB must be set}
     networks:
       - backend
     depends_on:

@@ -112,14 +112,102 @@ def is_valid_acme_domain(domain: str) -> bool:
 
     return True
 
-def validate_environment():
+def load_production_env(filepath=".env") -> dict:
+    if not os.path.lexists(filepath):
+        return {}
+
+    if os.path.islink(filepath):
+        fail(f"'{filepath}' is a symlink, which is not permitted.")
+
+    st = os.stat(filepath)
+    import stat
+    if not stat.S_ISREG(st.st_mode):
+        fail(f"'{filepath}' exists but is not a regular file.")
+
+    if st.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+        fail(f"Unsafe '{filepath}' permissions. File must not be group or world accessible. Run: chmod 600 {filepath}")
+
+    env_data = {}
+    key_regex = re.compile(r'^[A-Z_][A-Z0-9_]*$')
+
+    with open(filepath, 'r', encoding='utf-8') as f:
+        for line_num, line in enumerate(f, 1):
+            clean_line = line.strip()
+            if not clean_line or clean_line.startswith('#'):
+                continue
+
+            if '=' not in clean_line:
+                fail(f"Malformed assignment in '{filepath}' on line {line_num} (missing '=').")
+
+            key, val = clean_line.split('=', 1)
+            key = key.strip()
+            val = val.strip()
+
+            if not key_regex.match(key):
+                fail(f"Invalid variable name '{key}' in '{filepath}' on line {line_num}.")
+
+            if key in env_data:
+                fail(f"Duplicate key '{key}' found in '{filepath}' on line {line_num}.")
+
+            # Handle quoting
+            if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+                if len(val) >= 2:
+                    val = val[1:-1]
+
+            env_data[key] = val
+
+    return env_data
+
+def resolve_effective_config(env_data: dict, process_env: dict) -> dict:
+    config = {}
+    config.update(env_data)
+    # Process environment overrides .env (Compose semantics)
+    for k, v in process_env.items():
+        config[k] = v
+    return config
+
+def validate_secrets(config: dict):
+    log("Validating production configuration values...")
+    required_keys = [
+        "API_SECRET_KEY", "POSTGRES_PASSWORD", "N8N_DB_PASSWORD",
+        "N8N_ENCRYPTION_KEY", "CADDY_ADMIN_HASH", "CADDY_ADMIN_USER",
+        "DOMAIN", "ACME_EMAIL", "POSTGRES_DB", "POSTGRES_USER",
+        "N8N_DB_NAME", "N8N_DB_USER"
+    ]
+    for key in required_keys:
+        val = config.get(key, "").strip()
+        if not val:
+            fail(f"Required secret {key} is missing or empty.")
+        if "__REPLACE_WITH" in val:
+            fail(f"Required secret {key} contains a placeholder value.")
+
+    optional_keys = [
+        "ADZUNA_APP_ID", "ADZUNA_APP_KEY", "JOOBLE_API_KEY",
+        "BACKUP_ENCRYPTION_KEY", "BACKUP_S3_ACCESS_KEY", "BACKUP_S3_SECRET_KEY"
+    ]
+    for key in optional_keys:
+        val = config.get(key, "").strip()
+        if "__REPLACE_WITH" in val:
+            fail(f"Optional secret {key} contains a placeholder value.")
+
+def validate_environment(config):
     log("Validating environment...")
+
+    env_file = ".env"
+    if os.path.exists(env_file):
+        import stat
+        st = os.stat(env_file)
+        if not stat.S_ISREG(st.st_mode):
+            fail(f"'{env_file}' exists but is not a regular file.")
+        if st.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+            fail(f"Unsafe '{env_file}' permissions. File must not be group or world accessible. Run: chmod 600 {env_file}")
+
     if not shutil.which("docker"):
         fail("Docker is not installed or not in PATH.")
     if not os.path.exists(COMPOSE_FILE):
         fail(f"Production compose file '{COMPOSE_FILE}' not found.")
 
-    domain = os.environ.get("DOMAIN", "")
+    domain = config.get("DOMAIN", "")
     if not is_valid_acme_domain(domain):
         fail(f"DOMAIN '{domain}' is not a valid FQDN for ACME TLS.")
 
@@ -194,7 +282,7 @@ def check_db_ready():
             time.sleep(2)
         fail("Database failed to become healthy.")
 
-def create_backup(sha, metadata):
+def create_backup(sha, metadata, config):
     log("Creating pre-migration database backup...")
     os.makedirs(BACKUP_DIR, mode=0o700, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
@@ -207,11 +295,11 @@ def create_backup(sha, metadata):
         fail(f"Backup file collision: {filepath} already exists. Refusing to overwrite.", metadata)
 
     run_env = os.environ.copy()
-    run_env["PGPASSWORD"] = os.environ.get("POSTGRES_PASSWORD", "")
+    run_env["PGPASSWORD"] = config.get("POSTGRES_PASSWORD", "")
     cmd = [
         "docker", "compose", "-f", COMPOSE_FILE,
         "exec", "-T", "-e", "PGPASSWORD",
-        "db", "pg_dump", "-U", os.environ["POSTGRES_USER"], "-d", os.environ["POSTGRES_DB"], "-Fc"
+        "db", "pg_dump", "-U", config["POSTGRES_USER"], "-d", config["POSTGRES_DB"], "-Fc"
     ]
     with open(fd, "wb") as f:
         res = subprocess.run(cmd, stdout=f, stderr=subprocess.PIPE, env=run_env)
@@ -312,7 +400,7 @@ def extract_alembic_revs(output):
             revs.add(match.group(1))
     return revs
 
-def execute_migration(metadata):
+def execute_migration(metadata, config):
     log("Executing DB migration...")
 
     # Determine expected heads
@@ -352,11 +440,11 @@ def execute_migration(metadata):
 
     # DB connectivity check
     run_env = os.environ.copy()
-    run_env["PGPASSWORD"] = os.environ.get("POSTGRES_PASSWORD", "")
+    run_env["PGPASSWORD"] = config.get("POSTGRES_PASSWORD", "")
     cmd_check = [
         "docker", "compose", "-f", COMPOSE_FILE,
         "exec", "-T", "-e", "PGPASSWORD",
-        "db", "psql", "-U", os.environ["POSTGRES_USER"], "-d", os.environ["POSTGRES_DB"], "-c", "SELECT 1;"
+        "db", "psql", "-U", config["POSTGRES_USER"], "-d", config["POSTGRES_DB"], "-c", "SELECT 1;"
     ]
     res_db = subprocess.run(cmd_check, capture_output=True, text=True, env=run_env)
     if res_db.returncode != 0:
@@ -436,7 +524,13 @@ def main():
     try:
         sha = validate_sha(args.sha)
         os.environ["APP_COMMIT_SHA"] = sha
-        validate_environment()
+
+        env_data = load_production_env()
+        config = resolve_effective_config(env_data, os.environ)
+
+        validate_secrets(config)
+
+        validate_environment(config)
 
         current = get_current_release()
         if current.get("release_sha") == sha and current.get("phase") == DeployPhase.ROLLOUT_SUCCEEDED.value:
@@ -453,10 +547,10 @@ def main():
         metadata = init_metadata(sha, image_name, current.get("release_sha"))
 
         check_db_ready()
-        create_backup(sha, metadata)
+        create_backup(sha, metadata, config)
         verify_restore(metadata)
 
-        execute_migration(metadata)
+        execute_migration(metadata, config)
 
         start_deployment(sha, metadata)
 
