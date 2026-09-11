@@ -32,3 +32,18 @@ def test_adzuna_endpoint_missing_header():
 def test_adzuna_endpoint_invalid_header():
     res = client.post("/ingestion/adzuna", headers={"X-Api-Key": "wrong_key"}, json={"keywords": "py", "location": "blr"})
     assert res.status_code == 401
+
+def test_readiness_db_reachable():
+    res = client.get("/health/ready")
+    assert res.status_code == 200
+    assert res.json() == {"status": "ready"}
+
+def test_readiness_db_unavailable(monkeypatch, db_session):
+    # We monkeypatch engine.connect to raise an exception
+    from sqlalchemy.engine import Engine
+    def mock_connect(*args, **kwargs):
+        raise Exception("DB down")
+    monkeypatch.setattr(Engine, "connect", mock_connect)
+    res = client.get("/health/ready")
+    assert res.status_code == 503
+    assert "unavailable" in res.json()["detail"].lower()
