@@ -141,3 +141,21 @@ To update the locks, use a Python 3.12 environment (preferably matching producti
 docker run --rm -v $(pwd)/backend:/backend python:3.12-slim sh -c "pip install pip-tools && pip-compile /backend/requirements.txt --output-file /backend/requirements.lock"
 ```
 Do not hand-edit `requirements.lock`.
+
+## CI/CD Pipeline (005.9.6)
+
+### Architecture
+The JobPilot CI/CD architecture is split into two independent workflows to protect secrets and ensure trusted deployments.
+
+- **CI Pipeline:** Runs tests in an isolated GitHub Actions `ubuntu-latest` environment on all pushes and PRs to `master`. Uses a PostgreSQL 16 service container and tests against Python 3.12. It explicitly operates with minimal, read-only permissions and possesses no access to production credentials.
+- **CD Pipeline (Image Publish):** A trusted build-and-publish job that triggers exclusively upon a successful CI run on the `master` branch. It utilizes GitHub's native `ubuntu-24.04-arm` runner to compile a native ARM64 image without QEMU emulation penalties.
+
+### Exact SHA Identity
+The deployment pipeline strongly forbids mutable tags like `latest`. The native ARM64 image is built and tagged precisely with its 40-character Git commit SHA, creating an immutable artifact linked deterministically to the repository state. The SHA is structurally validated before publishing.
+
+### GHCR Package Visibility
+Production images are published to the GitHub Container Registry (`ghcr.io`) using the scoped `GITHUB_TOKEN` automatically provided by GitHub Actions (requiring only `packages: write`).
+**Note:** The first time an image is published, it may default to "Private" visibility. An operator must manually navigate to the repository's Package settings on GitHub and change the visibility of the `jobpilot-fastapi` package to **Public**. This permits the VPS deployment script to pull the image securely over HTTPS without requiring complex local credential management.
+
+### No Deployment Implemented Yet
+As of 005.9.6-B, automatic rollout to the VPS is intentionally deferred. The CD pipeline orchestrates the required ARM64 image publication only. Future milestones will implement SSH-based pull deployments executing `scripts/deploy.py` on the VPS.

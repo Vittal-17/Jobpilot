@@ -310,3 +310,64 @@ def test_db_setup_argv_protection():
 
     # Must use \getenv
     assert "getenv password_val N8N_DB_PASSWORD" in cmd_str or "\\getenv password_val N8N_DB_PASSWORD" in cmd_str
+
+def test_ci_workflow_exists_and_secure():
+    with open(".github/workflows/ci.yml", "r") as f:
+        ci = yaml.safe_load(f)
+
+    assert ci["name"] == "CI Pipeline"
+
+    # Prove no pull_request_target
+    assert "pull_request" in ci[True]
+    assert "pull_request_target" not in ci[True]
+
+    # Minimal permissions
+    assert ci["permissions"]["contents"] == "read"
+    assert "write" not in str(ci["permissions"]).lower()
+
+    # Targets Python 3.12
+    test_job = ci["jobs"]["test"]
+    assert test_job["runs-on"] == "ubuntu-latest"
+    steps = test_job["steps"]
+    python_step = next(s for s in steps if "setup-python" in s.get("uses", ""))
+    assert python_step["with"]["python-version"] == "3.12"
+
+    # PostgreSQL 16 service
+    postgres = test_job["services"]["postgres"]
+    assert "postgres:16" in postgres["image"]
+
+    # Test DB URL
+    pytest_step = next(s for s in steps if "pytest" in str(s.get("run", "")))
+    assert "TEST_DATABASE_URL" in pytest_step["env"]
+    assert "N8N_ENCRYPTION_KEY" not in str(pytest_step["env"])
+    assert "POSTGRES_PASSWORD" not in pytest_step["env"]
+
+def test_cd_workflow_exists_and_secure():
+    with open(".github/workflows/cd.yml", "r") as f:
+        cd = yaml.safe_load(f)
+
+    assert cd["name"] == "CD Pipeline"
+
+    # Minimal permissions
+    assert cd["permissions"]["contents"] == "read"
+    assert cd["permissions"]["packages"] == "write"
+
+    # Targets native ARM64
+    build_job = cd["jobs"]["build-and-publish"]
+    assert build_job["runs-on"] == "ubuntu-24.04-arm"
+
+    # Doesn't publish automatically from PRs
+    # workflow_run triggered by CI completion
+    assert "workflow_run" in cd[True]
+    assert cd[True]["workflow_run"]["branches"] == ["master"]
+
+    # Exact SHA tagging, no latest
+    steps = build_job["steps"]
+    build_step = next(s for s in steps if "build-push-action" in s.get("uses", ""))
+    tags = build_step["with"]["tags"]
+    assert "latest" not in tags
+    assert "github.event.workflow_run.head_sha" in tags
+
+    # Uses GITHUB_TOKEN
+    login_step = next(s for s in steps if "login-action" in s.get("uses", ""))
+    assert "secrets.GITHUB_TOKEN" in login_step["with"]["password"]
