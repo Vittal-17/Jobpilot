@@ -62,6 +62,14 @@ def test_dockerfile_is_non_root():
     assert "EXPOSE 8000" in content
     assert "HEALTHCHECK" in content
 
+
+def test_dockerfile_commit_traceability():
+    with open("backend/Dockerfile.production", "r") as f:
+        content = f.read()
+
+    assert "ARG APP_COMMIT_SHA" in content
+    assert "ENV APP_COMMIT_SHA=${APP_COMMIT_SHA}" in content
+
 def test_docker_compose_config_validation():
     import subprocess
     import sys
