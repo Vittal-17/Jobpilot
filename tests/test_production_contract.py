@@ -73,6 +73,7 @@ def test_docker_compose_config_validation():
 
     # Run docker compose config using the example environment to avoid missing variable errors
     env = os.environ.copy()
+    env["APP_COMMIT_SHA"] = "0123456789abcdef0123456789abcdef01234567"
 
     # Load required vars from .env.example
     with open(".env.example") as f:
@@ -144,6 +145,7 @@ def test_rendered_compose_validation():
         pytest.skip("docker not installed")
 
     env = os.environ.copy()
+    env["APP_COMMIT_SHA"] = "0123456789abcdef0123456789abcdef01234567"
     with open(".env.example") as f:
         for line in f:
             line = line.strip()
