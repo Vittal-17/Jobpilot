@@ -21,6 +21,33 @@ PostgreSQL (Source of Truth)
 - **Backend Network (`jobpilot_backend`)**: Connects n8n to FastAPI, and FastAPI to PostgreSQL.
 - **Port Publication**: Only Caddy exposes host ports (80 and 443). FastAPI, PostgreSQL, and n8n have **no direct host port publication**.
 
+
+## Edge Security & Proxy Trust (005.9.4)
+
+### Caddy Ingress & TLS (ACME)
+- **Port Exposure**: Only TCP 80 and TCP 443 are publicly reachable.
+- **TLS**: Caddy negotiates TLS via ACME (Let's Encrypt or ZeroSSL). The `ACME_EMAIL` environment variable is required to register the ACME account and receive expiration/revocation notices.
+- **HSTS**: Caddy enforces `Strict-Transport-Security` (`max-age=31536000; includeSubDomains`) alongside `X-Content-Type-Options` and `X-Frame-Options` on the entire domain to block protocol downgrade attacks.
+- **DNS Requirements**: The application structurally validates the syntax/shape of `DOMAIN` to ensure it conforms to DNS naming rules suitable for ACME. DNS correctness (valid A/AAAA records pointing to the VPS) remains an external deployment prerequisite.
+- **VCN Firewall**: The Oracle VCN firewall must explicitly allow ingress TCP traffic on ports 80 and 443. Ensure no IPv6 pathways (AAAA records) bypass intended IPv4-only firewall rules.
+
+### n8n UI Protection (First-Boot Hijacking Prevention)
+- **First-Boot Vulnerability**: n8n (v1.0+) mandates User Management on the first visit. If exposed publicly, an attacker could hijack the Owner account.
+- **Mitigation**: Caddy restricts access using a `basic_auth` block for all paths except `/webhook/*` and `/webhook-test/*`.
+- **Configuration**: The `CADDY_ADMIN_USER` and `CADDY_ADMIN_HASH` variables in `.env` secure the UI. Generate the bcrypt hash using: `docker run --rm caddy:2.8-alpine caddy hash-password --plaintext "your_secure_password"`.
+
+### Proxy Trust Headers
+- **X-Forwarded-For Protection**: n8n must know Caddy is a trusted proxy to correctly resolve client IPs (essential for webhook IP restrictions and rate limiting). This is strictly mapped via `N8N_PROXY_HOPS=1`.
+- **Caddy Edge Semantics**: The client connects directly to Caddy. By default, Caddy does NOT trust incoming `X-Forwarded-*` values from the internet. Caddy sets and sanitizes its own proxy metadata. An attacker-supplied `X-Forwarded-For` header is not treated as authoritative. Consequently, n8n receives Caddy's sanitized proxy metadata, ensuring the true TCP socket IP is represented.
+- **Why N8N_PROXY_HOPS=1?**: n8n uses Express.js under the hood. Setting `N8N_PROXY_HOPS=1` instructs Express that there is exactly *one* reverse-proxy hop (Caddy). Express safely evaluates the sanitized header chain provided by Caddy and correctly binds `req.ip`.
+- **Note on Network Topology**: This configuration explicitly requires that Caddy is directly exposed to clients. There is currently no external CDN/load balancer/proxy in front of Caddy, so Caddy does not configure `trusted_proxies`. If a future Cloudflare or external load-balancer layer is introduced, Caddy's `trusted_proxies` configuration must be added, and `N8N_PROXY_HOPS` must be reevaluated. N8N_PROXY_HOPS is NOT interchangeable with arbitrary CIDR trust lists.
+
+### Internal Isolation Invariants
+- `n8n` port 5678 must remain private.
+- `FastAPI` port 8000 must remain private.
+- `PostgreSQL` port 5432 must remain private.
+- Webhook callbacks are securely preserved because Caddy routes `/webhook/*` directly to n8n without basic auth.
+
 ## ARM64 Requirement
 The target production VPS runs an ARM64/AArch64 processor (Neoverse-N1).
 - All images (`docker.n8n.io/n8nio/n8n:2.38.1`, `postgres:16-alpine`, `caddy:2.8-alpine`, and `python:3.12-slim-bookworm`) have been validated for `linux/arm64` architecture support.

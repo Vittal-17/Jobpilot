@@ -30,6 +30,9 @@ services:
     restart: unless-stopped
     environment:
       DOMAIN: ${DOMAIN?DOMAIN must be set}
+      ACME_EMAIL: ${ACME_EMAIL?ACME_EMAIL must be set}
+      CADDY_ADMIN_USER: ${CADDY_ADMIN_USER?CADDY_ADMIN_USER must be set}
+      CADDY_ADMIN_HASH: ${CADDY_ADMIN_HASH?CADDY_ADMIN_HASH must be set}
     ports:
       - "80:80"
       - "443:443"
@@ -62,6 +65,7 @@ services:
       - DB_POSTGRESDB_USER=${N8N_DB_USER?N8N_DB_USER must be set}
       - DB_POSTGRESDB_PASSWORD=${N8N_DB_PASSWORD?N8N_DB_PASSWORD must be set}
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY?N8N_ENCRYPTION_KEY must be set}
+      - N8N_PROXY_HOPS=1
       - N8N_PORT=5678
       - N8N_LISTEN_ADDRESS=0.0.0.0
       - WEBHOOK_URL=https://${DOMAIN?DOMAIN must be set}/

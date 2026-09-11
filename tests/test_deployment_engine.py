@@ -403,3 +403,24 @@ def test_deployment_lock_multiprocessing():
 
     # Persistent lock file remains present
     assert os.path.exists(deploy.LOCK_FILE)
+
+
+def test_domain_validation():
+    from scripts.deploy import is_valid_acme_domain
+
+    # Valid
+    assert is_valid_acme_domain("jobpilot.example.com") is True
+    assert is_valid_acme_domain("n8n.jobpilot.example.com") is True
+
+    # Invalid
+    assert is_valid_acme_domain("192.168.1.10") is False
+    assert is_valid_acme_domain("2001:db8::1") is False
+    assert is_valid_acme_domain("https://jobpilot.example.com") is False
+    assert is_valid_acme_domain("jobpilot.example.com/path") is False
+    assert is_valid_acme_domain("jobpilot.example.com:443") is False
+    assert is_valid_acme_domain("") is False
+    assert is_valid_acme_domain("   ") is False
+    assert is_valid_acme_domain("-jobpilot.example.com") is False
+    assert is_valid_acme_domain("jobpilot.example.com-") is False
+    assert is_valid_acme_domain("a" * 64 + ".com") is False  # Label too long
+    assert is_valid_acme_domain("local") is False  # No TLD

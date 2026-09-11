@@ -225,3 +225,63 @@ def test_caddy_domain_runtime_variable():
         caddyfile = f.read()
     assert "{$DOMAIN}" in caddyfile, "Caddyfile must use {$DOMAIN} placeholder"
     assert "jobpilot" not in caddyfile.lower(), "Caddyfile must not hardcode production domains"
+
+
+def test_caddy_acme_email_and_admin_configured():
+    with open("docker-compose.production.yml", "r") as f:
+        compose = yaml.safe_load(f)
+
+    caddy_env = compose["services"]["caddy"].get("environment", {})
+    if isinstance(caddy_env, list):
+        assert any(e.startswith("ACME_EMAIL=") for e in caddy_env)
+        assert any(e.startswith("CADDY_ADMIN_USER=") for e in caddy_env)
+        assert any(e.startswith("CADDY_ADMIN_HASH=") for e in caddy_env)
+    else:
+        assert "ACME_EMAIL" in caddy_env
+        assert "CADDY_ADMIN_USER" in caddy_env
+        assert "CADDY_ADMIN_HASH" in caddy_env
+
+
+def test_n8n_proxy_trust_configured():
+    with open("docker-compose.production.yml", "r") as f:
+        compose = yaml.safe_load(f)
+
+    n8n_env = compose["services"]["n8n"].get("environment", {})
+    if isinstance(n8n_env, list):
+        # We need N8N_PROXY_HOPS=1 exactly
+        assert "N8N_PROXY_HOPS=1" in n8n_env, "N8N_PROXY_HOPS must be exactly 1"
+        assert not any(e.startswith("N8N_FORWARDED_HEADER_TRUSTED_PROXIES=") for e in n8n_env)
+    else:
+        assert n8n_env.get("N8N_PROXY_HOPS") == "1", "N8N_PROXY_HOPS must be exactly 1"
+        assert "N8N_FORWARDED_HEADER_TRUSTED_PROXIES" not in n8n_env
+
+
+def test_caddyfile_security_headers():
+    with open("Caddyfile", "r") as f:
+        caddyfile = f.read()
+
+    assert "Strict-Transport-Security" in caddyfile
+    assert "X-Content-Type-Options" in caddyfile
+    assert "email {$ACME_EMAIL}" in caddyfile
+    assert "basic_auth" in caddyfile
+    assert "{$CADDY_ADMIN_USER} {$CADDY_ADMIN_HASH}" in caddyfile
+    assert "/webhook/*" in caddyfile
+
+
+def test_caddy_is_edge_proxy_no_trusted_proxies():
+    '''
+    Conceptual Spoofing Security Contract:
+    - Request A (no X-Forwarded-For): n8n receives Caddy-derived client identity.
+    - Request B (X-Forwarded-For: 1.2.3.4): Caddy does NOT trust external XFF by default.
+      It sanitizes/sets its own metadata, ensuring the external value cannot force n8n to treat 1.2.3.4 as the client.
+    - Request C (X-Forwarded-Proto: http): n8n receives the proxy's authoritative HTTPS protocol.
+
+    This structural test proves Caddy is acting as the definitive edge by ensuring
+    no 'trusted_proxies' directive exists, which would otherwise instruct Caddy to
+    pass through external spoofed headers.
+    '''
+    with open("Caddyfile", "r") as f:
+        caddyfile = f.read()
+
+    # Prove trusted_proxies is completely absent, cementing Caddy as the edge.
+    assert "trusted_proxies" not in caddyfile, "Caddy must not trust external proxies in the current topology"

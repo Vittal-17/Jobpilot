@@ -89,12 +89,39 @@ def validate_sha(sha):
         fail(f"Invalid SHA: {sha}. Must be exactly 40 lowercase hexadecimal characters.")
     return sha
 
+
+def is_valid_acme_domain(domain: str) -> bool:
+    if not domain or len(domain) > 253:
+        return False
+    # Reject URL schemes, ports, paths, whitespace, query, fragments
+    if any(c in domain for c in (':', '/', ' ', '?', '#')):
+        return False
+
+    labels = domain.split('.')
+    if len(labels) < 2:
+        return False
+
+    label_regex = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$")
+    for label in labels:
+        if not label_regex.match(label):
+            return False
+
+    # Reject pure IPv4
+    if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", domain):
+        return False
+
+    return True
+
 def validate_environment():
     log("Validating environment...")
     if not shutil.which("docker"):
         fail("Docker is not installed or not in PATH.")
     if not os.path.exists(COMPOSE_FILE):
         fail(f"Production compose file '{COMPOSE_FILE}' not found.")
+
+    domain = os.environ.get("DOMAIN", "")
+    if not is_valid_acme_domain(domain):
+        fail(f"DOMAIN '{domain}' is not a valid FQDN for ACME TLS.")
 
     min_space = int(os.environ.get("MIN_FREE_SPACE_BYTES", MIN_FREE_SPACE_BYTES))
     free_space = shutil.disk_usage(".").free
