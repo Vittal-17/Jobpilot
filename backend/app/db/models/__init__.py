@@ -6,6 +6,7 @@ from .search_execution import SearchExecutionModel
 from .user import User
 from .user_session import UserSession
 from .user_profile import UserProfile
+from .saved_job import SavedJob
 
 __all__ = [
     "JobModel",
@@ -15,5 +16,6 @@ __all__ = [
     "SearchExecutionModel",
     "User",
     "UserSession",
-    "UserProfile"
+    "UserProfile",
+    "SavedJob"
 ]
