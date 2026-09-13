@@ -2,7 +2,7 @@ from app.api.endpoints.ingestion import verify_api_key
 from fastapi import Depends
 
 from fastapi import FastAPI
-from app.api.endpoints import ingestion, auth, users, profile
+from app.api.endpoints import ingestion, auth, users, profile, jobs
 
 app = FastAPI(
     title="JobPilot API",
@@ -14,6 +14,7 @@ app.include_router(ingestion.router, prefix="/ingestion", tags=["ingestion"])
 app.include_router(auth.router, prefix="/v1/auth", tags=["auth"])
 app.include_router(users.router, prefix="/v1", tags=["users"])
 app.include_router(profile.router, prefix="/v1", tags=["profile"])
+app.include_router(jobs.router, prefix="/v1/jobs", tags=["jobs"])
 
 @app.get("/health")
 def health_check() -> dict[str, str]:
