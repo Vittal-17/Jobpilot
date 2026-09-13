@@ -602,3 +602,21 @@ def test_effective_configuration_propagates_to_subprocesses():
 
         # APP_COMMIT_SHA remains the exact requested SHA
         assert env.get("APP_COMMIT_SHA") == "a"*40
+
+def test_migration_service_requires_api_secret_key():
+    import yaml
+    import os
+
+    compose_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "docker-compose.production.yml")
+    with open(compose_path, 'r') as f:
+        compose_data = yaml.safe_load(f)
+
+    migration_service = compose_data.get('services', {}).get('migration')
+    assert migration_service is not None, "Migration service not found in docker-compose.production.yml"
+
+    env_vars = migration_service.get('environment', [])
+
+    # We must explicitly check that API_SECRET_KEY is present and strictly required.
+    # The requirement is it must be exactly: API_SECRET_KEY=${API_SECRET_KEY:?API_SECRET_KEY must be set}
+    expected_env = "API_SECRET_KEY=${API_SECRET_KEY:?API_SECRET_KEY must be set}"
+    assert expected_env in env_vars, f"Expected '{expected_env}' in migration environment, but got {env_vars}"
