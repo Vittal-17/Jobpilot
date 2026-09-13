@@ -336,7 +336,7 @@ def test_no_automatic_alembic_downgrade_occurs():
         assert "downgrade" not in cmd
         assert "upgrade head" in cmd or "current" in cmd or "psql" in cmd or "heads" in cmd
 
-def test_migration_invocations_use_no_build():
+def test_migration_invocations_exclude_no_build():
     metadata = {}
     with mock.patch("subprocess.run") as m_run, mock.patch("os.environ", {"POSTGRES_PASSWORD":"p", "POSTGRES_USER":"u", "POSTGRES_DB":"d"}):
         def side_effect(*args, **kwargs):
@@ -355,8 +355,7 @@ def test_migration_invocations_use_no_build():
         for call in m_run.call_args_list:
             cmd = " ".join(call[0][0])
             if "alembic" in cmd:
-                assert "--no-build" in cmd
-                assert "build" not in cmd.replace("--no-build", "") # Prove no silent rebuild
+                assert "--no-build" not in cmd
                 alembic_calls += 1
 
         assert alembic_calls == 3 # heads, upgrade, current

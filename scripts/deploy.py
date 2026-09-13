@@ -430,7 +430,7 @@ def execute_migration(metadata, config):
 
     # Determine expected heads
     res_heads = subprocess.run(
-        ["docker", "compose", "-f", COMPOSE_FILE, "run", "--rm", "--no-build", "migration", "alembic", "heads"],
+        ["docker", "compose", "-f", COMPOSE_FILE, "run", "--rm", "migration", "alembic", "heads"],
         capture_output=True, text=True
     )
     if res_heads.returncode != 0:
@@ -443,14 +443,14 @@ def execute_migration(metadata, config):
     update_phase(metadata, DeployPhase.MIGRATION_STARTED)
 
     res = subprocess.run(
-        ["docker", "compose", "-f", COMPOSE_FILE, "run", "--rm", "--no-build", "migration", "alembic", "upgrade", "head"],
+        ["docker", "compose", "-f", COMPOSE_FILE, "run", "--rm", "migration", "alembic", "upgrade", "head"],
         capture_output=True, text=True
     )
     if res.returncode != 0:
         fail(f"Migration failed:\n{res.stderr}\n{res.stdout}\nStop. Preserving backup. Do not deploy.", metadata)
 
     res_current = subprocess.run(
-        ["docker", "compose", "-f", COMPOSE_FILE, "run", "--rm", "--no-build", "migration", "alembic", "current"],
+        ["docker", "compose", "-f", COMPOSE_FILE, "run", "--rm", "migration", "alembic", "current"],
         capture_output=True, text=True
     )
     if res_current.returncode != 0:
