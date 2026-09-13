@@ -90,22 +90,14 @@ def _clean_abandoned_claims(db: Session, reference_time: datetime | None = None)
         WHERE status = 'selected' AND selected_at < :threshold
     """)
     try:
-        with db.begin_nested():
-            result = db.execute(
+        with Session(db.get_bind()) as cleanup_db:
+            result = cleanup_db.execute(
                 stmt,
                 {"now": reference_time or datetime.now(timezone.utc), "threshold": threshold},
             )
-        # explicitly do NOT outer-commit here. Let the caller (or the later select commit) handle it,
-        # or we just rely on nested transaction. Actually, the outer transaction must commit this.
-        # But wait, if select_next_search fails to find a claim, it does not commit!
-        # So we SHOULD commit the cleanup if we want it to persist even when no claims are made.
-        # However, to avoid committing caller state, we should only commit if we are the transaction owner,
-        # or use a separate DB session. Since we are passed `db`, we should assume the caller commits
-        # OR we just do db.commit() because the API route `Depends(get_db)` expects us to manage our own writes.
-        # Let's commit it but wrap it so we only commit if there were changes.
-        if result.rowcount > 0:
-            db.commit()
-        return result.rowcount
+            if result.rowcount > 0:
+                cleanup_db.commit()
+            return result.rowcount
     except Exception as e:
         logger.exception("Failed to clean abandoned claims")
         return 0
@@ -200,7 +192,6 @@ def select_next_search(
                 db.add(claim)
                 db.flush() # Force IntegrityError if concurrent insert
             # Savepoint committed successfully
-            db.commit()
             return SelectionResult(action="execute", candidate=candidate, reason="highest_ranked_eligible", score=score, execution_id=claim.id)
 
         except CycleBudgetExhausted:
