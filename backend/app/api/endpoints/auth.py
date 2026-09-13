@@ -1,7 +1,8 @@
+from typing import Optional
 from datetime import datetime, timezone
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status, Cookie
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
 
@@ -101,3 +102,38 @@ def login(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error"
         )
+
+
+@router.post(
+    "/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Log out a user",
+    description="Revokes the active session and clears the session cookie."
+)
+def logout(
+    response: Response,
+    session_token: Optional[str] = Cookie(None, alias=SESSION_COOKIE_NAME),
+    db: Session = Depends(get_db)
+):
+    if session_token:
+        try:
+            revoked = auth_service.revoke_session(db, session_token)
+            if revoked:
+                db.commit()
+            else:
+                db.rollback()
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error during logout: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Internal server error"
+            )
+
+    # Always clear the cookie regardless of server-side session state
+    response.delete_cookie(
+        key=SESSION_COOKIE_NAME,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+    )

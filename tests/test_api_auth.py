@@ -192,3 +192,123 @@ def test_login_inactive_user(client, db_session):
     assert "session_token" not in response.cookies
     assert response.json()["detail"] == "Invalid email or password"
     assert "www-authenticate" not in response.headers
+
+def test_logout_success(client, db_session):
+    client.post("/v1/auth/register", json={"email": "logout@example.com", "password": "SecurePassword123!"})
+    login_res = client.post("/v1/auth/login", json={"email": "logout@example.com", "password": "SecurePassword123!"})
+    assert login_res.status_code == 200
+
+    # We need to pass the cookie manually if TestClient is over HTTP,
+    # but let's see if the test client passes it correctly or we need to manually pass it.
+    # To be robust, let's explicitly set the cookie for logout.
+    raw_token = login_res.cookies.get("session_token")
+    if not raw_token:
+        # Fallback to parse it manually if it wasn't captured due to Secure=True
+        set_cookie_header = login_res.headers.get("set-cookie")
+        import email.utils
+        parts = set_cookie_header.split(";")
+        raw_token = parts[0].split("=")[1].strip()
+
+    client.cookies.set("session_token", raw_token)
+
+    logout_res = client.post("/v1/auth/logout")
+    assert logout_res.status_code == 204
+
+    # Verify cookie clearing
+    set_cookie_header = logout_res.headers.get("set-cookie", "")
+    assert "session_token=" in set_cookie_header
+    # Some frameworks set max-age=0 or expires in the past for deletion
+    assert 'max-age=0' in set_cookie_header.lower() or 'expires=' in set_cookie_header.lower()
+
+    # Verify DB revoked
+    from app.db.models.user_session import UserSession
+    from app.core.security import hash_session_token
+    from sqlalchemy import select
+    token_hash = hash_session_token(raw_token)
+    session = db_session.execute(select(UserSession).where(UserSession.token_hash == token_hash)).scalar_one_or_none()
+    assert session.revoked_at is not None
+
+    # Verify /v1/me rejects the same cookie
+    client.cookies.set("session_token", raw_token)
+    me_res = client.get("/v1/me")
+    assert me_res.status_code == 401
+
+def test_logout_missing_cookie(client):
+    client.cookies.clear()
+    logout_res = client.post("/v1/auth/logout")
+    assert logout_res.status_code == 204
+    # The endpoint should still try to clear the cookie
+    assert "session_token=" in logout_res.headers.get("set-cookie", "")
+
+def test_logout_invalid_cookie(client):
+    client.cookies.set("session_token", "invalidtoken")
+    logout_res = client.post("/v1/auth/logout")
+    assert logout_res.status_code == 204
+    assert "session_token=" in logout_res.headers.get("set-cookie", "")
+
+def test_logout_repeated(client, db_session):
+    client.post("/v1/auth/register", json={"email": "logout2@example.com", "password": "SecurePassword123!"})
+    login_res = client.post("/v1/auth/login", json={"email": "logout2@example.com", "password": "SecurePassword123!"})
+
+    set_cookie_header = login_res.headers.get("set-cookie")
+    raw_token = set_cookie_header.split(";")[0].split("=")[1].strip()
+    client.cookies.set("session_token", raw_token)
+
+    # First logout
+    res1 = client.post("/v1/auth/logout")
+    assert res1.status_code == 204
+
+    # Restore cookie in client for second logout
+    client.cookies.set("session_token", raw_token)
+
+    # Second logout (idempotent)
+    res2 = client.post("/v1/auth/logout")
+    assert res2.status_code == 204
+
+def test_logout_does_not_revoke_other_user(client, db_session):
+    # User A
+    client.post("/v1/auth/register", json={"email": "userA@example.com", "password": "SecurePassword123!"})
+    loginA = client.post("/v1/auth/login", json={"email": "userA@example.com", "password": "SecurePassword123!"})
+    tokenA = loginA.headers.get("set-cookie").split(";")[0].split("=")[1].strip()
+
+    # User B
+    client.post("/v1/auth/register", json={"email": "userB@example.com", "password": "SecurePassword123!"})
+    loginB = client.post("/v1/auth/login", json={"email": "userB@example.com", "password": "SecurePassword123!"})
+    tokenB = loginB.headers.get("set-cookie").split(";")[0].split("=")[1].strip()
+
+    # Logout User A
+    client.cookies.set("session_token", tokenA)
+    client.post("/v1/auth/logout")
+
+    from app.db.models.user_session import UserSession
+    from app.core.security import hash_session_token
+    from sqlalchemy import select
+
+    # Assert A revoked, B active
+    sessionA = db_session.execute(select(UserSession).where(UserSession.token_hash == hash_session_token(tokenA))).scalar_one_or_none()
+    sessionB = db_session.execute(select(UserSession).where(UserSession.token_hash == hash_session_token(tokenB))).scalar_one_or_none()
+
+    assert sessionA.revoked_at is not None
+    assert sessionB.revoked_at is None
+
+def test_logout_unexpected_error(client, db_session, monkeypatch):
+    client.post("/v1/auth/register", json={"email": "logouterr@example.com", "password": "SecurePassword123!"})
+    login_res = client.post("/v1/auth/login", json={"email": "logouterr@example.com", "password": "SecurePassword123!"})
+
+    set_cookie_header = login_res.headers.get("set-cookie")
+    raw_token = set_cookie_header.split(";")[0].split("=")[1].strip()
+    client.cookies.set("session_token", raw_token)
+
+    def mock_revoke_session(*args, **kwargs):
+        raise Exception("Simulated database failure")
+
+    from app.services import auth_service
+    monkeypatch.setattr(auth_service, "revoke_session", mock_revoke_session)
+
+    logout_res = client.post("/v1/auth/logout")
+
+    # Prove it returns 500, not 204
+    assert logout_res.status_code == 500
+    # Prove it uses the generic 500 contract without leaking the exception details
+    assert logout_res.json()["detail"] == "Internal server error"
+    assert "Simulated database failure" not in logout_res.text
