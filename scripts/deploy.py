@@ -552,6 +552,7 @@ def main():
 
         env_data = load_production_env()
         config = resolve_effective_config(env_data, os.environ)
+        os.environ.update(config)
 
         validate_secrets(config)
 

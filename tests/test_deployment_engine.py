@@ -549,3 +549,57 @@ def test_restore_verification_no_password_in_args():
             return m
         m_run.side_effect = side_effect
         deploy.verify_restore(metadata)
+
+def test_effective_configuration_propagates_to_subprocesses():
+    import scripts.deploy as deploy_module
+    from unittest.mock import MagicMock, patch
+    import os
+
+    captured_envs = []
+    def fake_subprocess_run(*args, **kwargs):
+        # Capture the environment exactly as it would be inherited or explicitly passed
+        env_passed = kwargs.get("env")
+        if env_passed is None:
+            captured_envs.append(dict(os.environ))
+        else:
+            captured_envs.append(dict(env_passed))
+        return MagicMock(returncode=0, stdout="{}", stderr="")
+
+    # We patch os.environ carefully, clearing it to avoid host environment noise
+    test_env = {"API_SECRET_KEY": "process-env-secret", "EXPECTED_IMAGE_DIGEST": "digest123"}
+    with patch.dict(os.environ, test_env, clear=True):
+        with patch("scripts.deploy.load_production_env", return_value={"API_SECRET_KEY": "dot-env-secret", "DOMAIN": "example.com", "POSTGRES_USER": "test"}):
+            with patch("scripts.deploy.validate_secrets"):
+                with patch("scripts.deploy.validate_environment"):
+                    with patch("scripts.deploy.get_current_release", return_value={}):
+                        with patch("scripts.deploy.validate_artifact", return_value="test_image"):
+                            with patch("scripts.deploy.check_db_ready"):
+                                with patch("scripts.deploy.create_backup"):
+                                    with patch("scripts.deploy.verify_restore"):
+                                        with patch("scripts.deploy.execute_migration"):
+                                            with patch("scripts.deploy.wait_for_health"):
+                                                with patch("scripts.deploy.verify_release"):
+                                                    with patch("os.rename"):
+                                                        with patch("sys.argv", ["deploy.py", "--sha", "a"*40]):
+                                                            with patch("subprocess.run", side_effect=fake_subprocess_run):
+                                                                try:
+                                                                    deploy_module.main()
+                                                                except SystemExit:
+                                                                    pass
+
+    # Verify that at least one subprocess captured the environment correctly
+    assert len(captured_envs) > 0, "subprocess.run was not called"
+
+    # Check the last captured environment (e.g. from start_deployment)
+    for env in captured_envs:
+        # shared .env values reach the subprocess environment
+        assert env.get("DOMAIN") == "example.com"
+
+        # process environment values override .env values
+        assert env.get("API_SECRET_KEY") == "process-env-secret"
+
+        # EXPECTED_IMAGE_DIGEST remains preserved from process env
+        assert env.get("EXPECTED_IMAGE_DIGEST") == "digest123"
+
+        # APP_COMMIT_SHA remains the exact requested SHA
+        assert env.get("APP_COMMIT_SHA") == "a"*40
