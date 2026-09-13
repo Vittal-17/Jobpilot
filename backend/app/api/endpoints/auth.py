@@ -8,11 +8,11 @@ from sqlalchemy.exc import IntegrityError
 from app.db.database import get_db
 from app.schemas.auth import LoginRequest, UserCreate, UserResponse
 from app.services import auth_service
+from app.core.security import SESSION_COOKIE_NAME
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-SESSION_COOKIE_NAME = "session_token"
 
 
 @router.post(

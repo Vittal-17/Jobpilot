@@ -2,6 +2,8 @@ import secrets
 import hashlib
 import bcrypt
 
+SESSION_COOKIE_NAME = "session_token"
+
 # Dummy hash for timing attack mitigation (hash of "dummy" with a standard work factor)
 # Calculated once to avoid generating a new salt every time, which ensures stable timing.
 DUMMY_PASSWORD_HASH = "$2b$12$IS3BfN3Mz9aDg46VDBkP4eKXKySKU1oJwkR3N.fv7ks8kjaMUS19."
