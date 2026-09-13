@@ -14,6 +14,8 @@ permissions:
 
 jobs:
   build-and-publish:
+    outputs:
+      image_digest: ${{ steps.build_push.outputs.digest }}
     name: Build and Push ARM64 Image
     runs-on: ubuntu-24.04-arm
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
@@ -102,3 +104,45 @@ jobs:
 
           echo "Digest verification passed: $PULLED_DIGEST"
           echo "Image verification passed."
+
+  deploy-to-production:
+    name: Deploy to Production
+    needs: build-and-publish
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Setup exact release payload
+        run: |
+          set -euo pipefail
+
+          SHA="${{ github.event.workflow_run.head_sha }}"
+          DIGEST="${{ needs.build-and-publish.outputs.image_digest }}"
+
+          mkdir -p archive_staging/scripts
+          cp docker-compose.production.yml archive_staging/
+          cp scripts/deploy.py archive_staging/scripts/
+          cp Caddyfile archive_staging/
+          echo "$SHA" > archive_staging/release_sha.txt
+          echo "$DIGEST" > archive_staging/image_digest.txt
+
+          cd archive_staging
+          tar -cf ../release.tar docker-compose.production.yml scripts/ Caddyfile release_sha.txt image_digest.txt
+          cd ..
+
+          TAR_SHA256=$(sha256sum release.tar | awk '{print $1}')
+
+          echo "$VPS_SSH_KEY" > deploy_key
+          chmod 600 deploy_key
+
+          echo "$VPS_KNOWN_HOSTS" > known_hosts
+
+          cat release.tar | ssh -i deploy_key -o StrictHostKeyChecking=yes -o UserKnownHostsFile=known_hosts deploy@$VPS_HOST "$SHA $TAR_SHA256"
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
