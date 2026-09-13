@@ -17,7 +17,7 @@ MIN_FREE_SPACE_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB
 METADATA_FILE = ".current_release.json"
 PENDING_FILE = ".deploy_pending.json"
 COMPOSE_FILE = "docker-compose.production.yml"
-IMAGE_PREFIX = "jobpilot-fastapi"
+CANONICAL_IMAGE = "ghcr.io/vittal-17/jobpilot-fastapi"
 LOCK_FILE = ".deploy.lock"
 BACKUP_DIR = "backups"
 
@@ -112,9 +112,9 @@ def is_valid_acme_domain(domain: str) -> bool:
 
     return True
 
-def load_production_env(filepath=".env") -> dict:
+def load_production_env(filepath="/opt/jobpilot/shared/.env") -> dict:
     if not os.path.lexists(filepath):
-        return {}
+        fail(f"Required shared environment file '{filepath}' not found.")
 
     if os.path.islink(filepath):
         fail(f"'{filepath}' is a symlink, which is not permitted.")
@@ -193,7 +193,7 @@ def validate_secrets(config: dict):
 def validate_environment(config):
     log("Validating environment...")
 
-    env_file = ".env"
+    env_file = "/opt/jobpilot/shared/.env"
     if os.path.exists(env_file):
         import stat
         st = os.stat(env_file)
@@ -232,29 +232,53 @@ def get_current_release():
             eprint(f"[WARNING] Could not parse existing metadata: {e}")
     return {}
 
-def validate_artifact(sha):
+def validate_artifact(sha, expected_digest=None):
     log(f"Validating target artifact for SHA: {sha}...")
-    image_name = f"{IMAGE_PREFIX}:{sha}"
+    image_name = f"{CANONICAL_IMAGE}:{sha}"
+
+    log(f"Pulling canonical image reference: {image_name}")
+    pull_res = subprocess.run(["docker", "pull", image_name], capture_output=True, text=True)
+    if pull_res.returncode != 0:
+        fail(
+            f"Failed to pull canonical image '{image_name}':\n"
+            f"{pull_res.stderr}"
+        )
+
     res = subprocess.run(
         ["docker", "image", "inspect", image_name],
         capture_output=True, text=True
     )
     if res.returncode != 0:
-        fail(f"Target image '{image_name}' not found locally. Please build or pull it before deploying.")
+        fail(f"Target image '{image_name}' not found locally after pull.")
 
     try:
         inspect_data = json.loads(res.stdout)
-        arch = inspect_data[0].get("Architecture")
+        data = inspect_data[0]
+
+        arch = data.get("Architecture")
         if arch != "arm64":
             fail_msg = f"ARM64 MISMATCH: Image '{image_name}' has architecture '{arch}', not 'arm64'."
             if os.environ.get("ALLOW_ARCH_MISMATCH") == "true":
                 eprint(f"[WARNING] {fail_msg} Proceeding due to ALLOW_ARCH_MISMATCH=true.")
             else:
                 fail(fail_msg)
+
+        env_vars = data.get("Config", {}).get("Env", [])
+        sha_env = [e for e in env_vars if e.startswith("APP_COMMIT_SHA=")]
+        if not sha_env or sha_env[0].split("=")[1] != sha:
+            fail(f"Container configuration identity verification failed: APP_COMMIT_SHA does not equal '{sha}'.")
+
+        if expected_digest:
+            repo_digests = data.get("RepoDigests", [])
+            if not any(expected_digest in rd for rd in repo_digests):
+                fail(f"Image digest mismatch. Expected '{expected_digest}', found: {repo_digests}")
+            log("Image digest verified successfully.")
+
     except Exception as e:
         fail(f"Failed to inspect image: {e}")
 
     return image_name
+
 
 def init_metadata(sha, image_name, prev_sha):
     log("Initializing deployment metadata...")
@@ -353,6 +377,7 @@ def verify_restore(metadata):
     run_env = os.environ.copy()
     run_env["POSTGRES_PASSWORD"] = "verify"
     run_env["POSTGRES_DB"] = "verify"
+    run_env["PGPASSWORD"] = "verify"
 
     subprocess.run([
         "docker", "run", "-d", "--name", container_name,
@@ -365,8 +390,8 @@ def verify_restore(metadata):
         ready = False
         for _ in range(15):
             res = subprocess.run([
-                "docker", "exec", "-e", "PGPASSWORD=verify", container_name, "pg_isready", "-U", "postgres", "-d", "verify"
-            ], capture_output=True)
+                "docker", "exec", "-e", "PGPASSWORD", container_name, "pg_isready", "-U", "postgres", "-d", "verify"
+            ], capture_output=True, env=run_env)
             if res.returncode == 0:
                 ready = True
                 break
@@ -376,11 +401,11 @@ def verify_restore(metadata):
 
         # Restore without privileges/owner to avoid role errors in isolated DB
         cmd_restore = [
-            "docker", "exec", "-i", "-e", "PGPASSWORD=verify", container_name,
+            "docker", "exec", "-i", "-e", "PGPASSWORD", container_name,
             "pg_restore", "-U", "postgres", "-d", "verify", "--no-owner", "--no-privileges"
         ]
         with open(filepath, "rb") as f:
-            res = subprocess.run(cmd_restore, stdin=f, capture_output=True)
+            res = subprocess.run(cmd_restore, stdin=f, capture_output=True, env=run_env)
         # Any non-zero return code is a hard failure.
         if res.returncode != 0:
             fail(f"Restore verification failed: {res.stderr.decode()}", metadata)
@@ -499,7 +524,7 @@ def verify_release(sha, container_id, metadata):
     try:
         data = json.loads(res.stdout)[0]
         image = data["Config"]["Image"]
-        expected_suffix = f"{IMAGE_PREFIX}:{sha}"
+        expected_suffix = f"{CANONICAL_IMAGE}:{sha}"
         if image != expected_suffix and not image.endswith(f"/{expected_suffix}"):
             fail(f"Verification failed: Running image '{image}' does not match expected exact suffix '{expected_suffix}'.", metadata)
 
@@ -543,7 +568,16 @@ def main():
             except SystemExit:
                 log("Idempotent verification failed (drift detected). Proceeding with deployment...")
 
-        image_name = validate_artifact(sha)
+        expected_digest = os.environ.get("EXPECTED_IMAGE_DIGEST")
+
+        # Load from image_digest.txt if available in release directory
+        release_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        digest_file = os.path.join(release_dir, "image_digest.txt")
+        if os.path.exists(digest_file):
+            with open(digest_file) as df:
+                expected_digest = df.read().strip()
+
+        image_name = validate_artifact(sha, expected_digest)
         metadata = init_metadata(sha, image_name, current.get("release_sha"))
 
         check_db_ready()

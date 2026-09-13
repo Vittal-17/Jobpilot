@@ -45,14 +45,14 @@ def test_exact_sha_image_reference_generated():
     sha = "a" * 40
     with mock.patch("subprocess.run") as m_run:
         m_run.return_value.returncode = 0
-        m_run.return_value.stdout = json.dumps([{"Architecture": "arm64"}])
-        assert deploy.validate_artifact(sha) == f"jobpilot-fastapi:{sha}"
+        m_run.return_value.stdout = json.dumps([{"Architecture": "arm64", "Config": {"Env": [f"APP_COMMIT_SHA={sha}"]}}])
+        assert deploy.validate_artifact(sha) == f"ghcr.io/vittal-17/jobpilot-fastapi:{sha}"
 
 def test_arm64_mismatch_fails_closed():
     sha = "a" * 40
     with mock.patch("subprocess.run") as m_run:
         m_run.return_value.returncode = 0
-        m_run.return_value.stdout = json.dumps([{"Architecture": "amd64"}])
+        m_run.return_value.stdout = json.dumps([{"Architecture": "amd64", "Config": {"Env": [f"APP_COMMIT_SHA={sha}"]}}])
         with pytest.raises(SystemExit):
             deploy.validate_artifact(sha)
 
@@ -530,3 +530,22 @@ CADDY_ADMIN_HASH=test
 
     finally:
         os.chdir(original_cwd)
+
+def test_restore_verification_no_password_in_args():
+    metadata = {"backup": {"file": "dummy.dump"}}
+    with mock.patch("subprocess.run") as m_run, mock.patch("builtins.open", mock.mock_open()), mock.patch("time.sleep"), mock.patch("os.fsync"), mock.patch("os.rename"):
+        def side_effect(args, **kwargs):
+            # Assert PGPASSWORD=verify is NEVER in args
+            for arg in args:
+                assert "PGPASSWORD=verify" not in arg
+
+            # Assert PGPASSWORD is passed in env
+            if "env" in kwargs:
+                assert kwargs["env"].get("PGPASSWORD") == "verify"
+
+            m = mock.MagicMock()
+            m.returncode = 0
+            m.stderr = b""
+            return m
+        m_run.side_effect = side_effect
+        deploy.verify_restore(metadata)

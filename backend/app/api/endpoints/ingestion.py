@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -33,7 +35,7 @@ def ingest_adzuna(query: JobSearchQuery, db: Session = Depends(get_db)):
     except HTTPException:
         raise
     except Exception as e:
-        import traceback; traceback.print_exc(); raise HTTPException(status_code=500, detail="Internal server error")
+        logger.exception("Ingestion endpoint unhandled error"); raise HTTPException(status_code=500, detail="Internal server error")
 
     from app.providers.exceptions import ProviderConfigurationError
     try:
@@ -59,7 +61,7 @@ def ingest_jooble(query: JobSearchQuery, db: Session = Depends(get_db)):
     except HTTPException:
         raise
     except Exception as e:
-        import traceback; traceback.print_exc(); raise HTTPException(status_code=500, detail="Internal server error")
+        logger.exception("Ingestion endpoint unhandled error"); raise HTTPException(status_code=500, detail="Internal server error")
 
     from app.providers.exceptions import ProviderConfigurationError
     try:
@@ -150,7 +152,7 @@ def internal_execute_search(intent: CanonicalSearchIntent, db: Session = Depends
     except HTTPException:
         raise
     except Exception as e:
-        import traceback; traceback.print_exc(); raise HTTPException(status_code=500, detail="Internal server error")
+        logger.exception("Ingestion endpoint unhandled error"); raise HTTPException(status_code=500, detail="Internal server error")
 
 from pydantic import BaseModel, Field
 
@@ -205,6 +207,7 @@ def select_next_search_endpoint(context: CycleContext | None = None, db: Session
     try:
         cycle_id = context.cycle_id if context else None
         result = select_next_search(db, cycle_id=cycle_id)
+        db.commit()
         if result.candidate:
             try:
                 provider_decision = route_provider(db)

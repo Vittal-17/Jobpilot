@@ -415,3 +415,44 @@ def test_cd_workflow_exists_and_secure():
 
     # Exact comparison
     assert "$PULLED_DIGEST\" != \"$PUBLISHED_DIGEST" in run_script
+
+def test_cd_workflow_deploy_job_and_environment():
+    import yaml
+    with open(".github/workflows/cd.yml", "r") as f:
+        cd = yaml.safe_load(f)
+
+    deploy_job = cd["jobs"]["deploy-to-production"]
+    assert deploy_job is not None
+    assert deploy_job["needs"] == "build-and-publish"
+    assert deploy_job["environment"] == "production"
+
+    steps = deploy_job["steps"]
+    setup_step = next(s for s in steps if s.get("name") == "Setup exact release payload")
+    run_script = setup_step["run"]
+
+    # Must use StrictHostKeyChecking=yes and UserKnownHostsFile=known_hosts
+    assert "StrictHostKeyChecking=yes" in run_script
+    assert "StrictHostKeyChecking=no" not in run_script
+    assert "UserKnownHostsFile=known_hosts" in run_script
+
+    # Archive contents check - simplified to not list deploy.py twice
+    assert "tar -cf ../release.tar docker-compose.production.yml scripts/ Caddyfile release_sha.txt image_digest.txt" in run_script
+
+    # Secret handling for SSH
+    assert "echo \"$VPS_SSH_KEY\" > deploy_key" in run_script
+    assert "chmod 600 deploy_key" in run_script
+    assert "echo \"$VPS_KNOWN_HOSTS\" > known_hosts" in run_script
+
+    # The SSH command check (Grammar: SHA TAR_SHA256)
+    assert 'ssh -i deploy_key -o StrictHostKeyChecking=yes -o UserKnownHostsFile=known_hosts deploy@$VPS_HOST "$SHA $TAR_SHA256"' in run_script
+
+def test_deploy_py_canonical_image_usage():
+    with open("scripts/deploy.py", "r") as f:
+        content = f.read()
+
+    assert 'CANONICAL_IMAGE = "ghcr.io/vittal-17/jobpilot-fastapi"' in content
+    assert 'IMAGE_PREFIX' not in content
+
+    # Check .env path
+    assert 'def load_production_env(filepath="/opt/jobpilot/shared/.env") -> dict:' in content
+    assert 'env_file = "/opt/jobpilot/shared/.env"' in content

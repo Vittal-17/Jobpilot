@@ -104,7 +104,7 @@ services:
       dockerfile: Dockerfile.production
       args:
         APP_COMMIT_SHA: ${APP_COMMIT_SHA:?APP_COMMIT_SHA must be set to an exact Git SHA}
-    image: jobpilot-fastapi:${APP_COMMIT_SHA:?APP_COMMIT_SHA must be set to an exact Git SHA}
+    image: ghcr.io/vittal-17/jobpilot-fastapi:${APP_COMMIT_SHA:?APP_COMMIT_SHA must be set to an exact Git SHA}
     restart: unless-stopped
     environment:
       - ENVIRONMENT=production
@@ -208,7 +208,7 @@ services:
       dockerfile: Dockerfile.production
       args:
         APP_COMMIT_SHA: ${APP_COMMIT_SHA:?APP_COMMIT_SHA must be set to an exact Git SHA}
-    image: jobpilot-fastapi:${APP_COMMIT_SHA:?APP_COMMIT_SHA must be set to an exact Git SHA}
+    image: ghcr.io/vittal-17/jobpilot-fastapi:${APP_COMMIT_SHA:?APP_COMMIT_SHA must be set to an exact Git SHA}
     profiles:
       - tools
     environment:
