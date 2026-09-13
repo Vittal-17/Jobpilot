@@ -1,14 +1,19 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
+from datetime import datetime, timezone
 import logging
 
+from fastapi import APIRouter, Depends, HTTPException, Response, status
+from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
+
 from app.db.database import get_db
-from app.schemas.auth import UserCreate, UserResponse
+from app.schemas.auth import LoginRequest, UserCreate, UserResponse
 from app.services import auth_service
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+SESSION_COOKIE_NAME = "session_token"
+
 
 @router.post(
     "/register",
@@ -39,6 +44,59 @@ def register(user_in: UserCreate, db: Session = Depends(get_db)):
     except Exception as e:
         db.rollback()
         logger.error(f"Error during registration: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error"
+        )
+
+
+@router.post(
+    "/login",
+    response_model=UserResponse,
+    summary="Log in a user",
+    description="Authenticates a user and sets a secure HttpOnly session cookie."
+)
+def login(
+    login_req: LoginRequest,
+    response: Response,
+    db: Session = Depends(get_db)
+):
+    try:
+        user = auth_service.authenticate_user(db, login_req.email, login_req.password)
+        if not user:
+            # Generic error
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password"
+            )
+
+        # Update last login
+        user.last_login_at = datetime.now(timezone.utc)
+
+        # Create session
+        session, raw_token = auth_service.create_session(db, user.id)
+        db.commit()
+
+        # Set cookie
+        max_age = auth_service.SESSION_EXPIRY_DAYS * 24 * 60 * 60
+        response.set_cookie(
+            key=SESSION_COOKIE_NAME,
+            value=raw_token,
+            max_age=max_age,
+            expires=session.expires_at,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+        )
+
+        return user
+    except HTTPException:
+        # Re-raise HTTP exceptions (like 401)
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error during login: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Internal server error"
