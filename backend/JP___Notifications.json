@@ -47,7 +47,10 @@
             "id": "T0w0H2O4M9E6W4T6",
             "name": "JP - FastAPI Internal API"
           }
-        }
+        },
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 2000
       },
       {
         "parameters": {
@@ -135,7 +138,10 @@
             "id": "T0w0H2O4M9E6W4T6",
             "name": "JP - FastAPI Internal API"
           }
-        }
+        },
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 2000
       }
     ],
     "connections": {

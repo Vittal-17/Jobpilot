@@ -1,7 +1,6 @@
 import json
 from pathlib import Path
 
-
 def test_search_cycle_workflow_contract():
     workflows = json.loads(
         Path("backend/JP___Search_Cycle.json").read_text(encoding="utf-8")
@@ -75,6 +74,29 @@ def test_notifications_workflow_contract():
     assert check_empty["parameters"]["conditions"]["conditions"][0]["rightValue"] == 0
 
     assert workflow["active"] is False
+
+    # Failure-path connectivity: ensure errors halt the workflow and never leak to the next node
+    assert claim.get("continueOnFail") is not True
+    assert nodes["Send Telegram"].get("continueOnFail") is not True
+    assert ack.get("continueOnFail") is not True
+
+    # Retry settings improve deterministic retry behavior natively for idempotent API boundaries
+    assert claim.get("retryOnFail") is True
+    assert ack.get("retryOnFail") is True
+
+    # Telegram node MUST NOT have retryOnFail. While delivery_id provides idempotent durable claiming,
+    # it does not guarantee external exactly-once Telegram delivery. An automatic retry on a lost response
+    # would result in duplicate messages reaching the user.
+    assert nodes["Send Telegram"].get("retryOnFail") is not True
+
+    # Successful ordering and empty-path halting
+    connections = workflow["connections"]
+    assert connections["Claim Notifications"]["main"][0][0]["node"] == "Check If Empty"
+    assert connections["Check If Empty"]["main"][0][0]["node"] == "Format Payload"
+    assert len(connections["Check If Empty"]["main"]) == 2
+    assert len(connections["Check If Empty"]["main"][1]) == 0  # false path stops
+    assert connections["Format Payload"]["main"][0][0]["node"] == "Send Telegram"
+    assert connections["Send Telegram"]["main"][0][0]["node"] == "Acknowledge Delivery"
 
 def test_notifications_workflow_escaping():
     import subprocess

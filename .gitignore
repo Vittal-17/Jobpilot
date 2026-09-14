@@ -5,3 +5,4 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .deploy.lock
+.deploy_pending.json*
