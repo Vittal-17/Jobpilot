@@ -26,8 +26,8 @@ class SelectionResult(BaseModel):
     score: Optional[int] = None
     policy_version: str = "v1"
 
-def generate_candidates() -> List[SearchCandidate]:
-    """Generates the bounded set of all theoretical search candidates from taxonomy."""
+def generate_candidates(db: Optional[Session] = None) -> List[SearchCandidate]:
+    """Generates the bounded set of all theoretical search candidates from taxonomy and user searches."""
     taxonomy = get_authoritative_taxonomy()
     candidates = []
 
@@ -46,9 +46,79 @@ def generate_candidates() -> List[SearchCandidate]:
                 tier=location.tier
             ))
 
+    if db is not None:
+        stmt = text("""
+            SELECT us.id, us.query, us.location
+            FROM user_searches us
+            LEFT JOIN (
+                SELECT candidate_id, MAX(selected_at) as last_selected
+                FROM search_execution
+                WHERE candidate_id LIKE 'user_search::%'
+                GROUP BY candidate_id
+            ) se ON se.candidate_id = 'user_search::' || us.id::text
+            WHERE us.enabled = true
+            ORDER BY se.last_selected ASC NULLS FIRST, us.id ASC
+            LIMIT 500
+        """)
+        rows = db.execute(stmt).fetchall()
+        for row in rows:
+            cid = f"user_search::{row.id}"
+            candidates.append(SearchCandidate(
+                candidate_id=cid,
+                role_id="user_search",
+                location_id="user_search",
+                role_canonical=row.query or "",
+                location_canonical=row.location or "",
+                priority=3, # Integrates with taxonomy without unconditional top priority
+                tier=2
+            ))
+
     # Sort deterministically
     candidates.sort(key=lambda c: (c.priority, c.tier, c.candidate_id))
     return candidates
+
+def resolve_candidate(db: Session, candidate_id: str) -> Optional[SearchCandidate]:
+    """Resolves an exact candidate for execution, independent of the bounded scheduler window."""
+    if candidate_id.startswith("user_search::"):
+        parts = candidate_id.split("::")
+        if len(parts) != 2:
+            return None
+        try:
+            us_id = int(parts[1])
+        except ValueError:
+            return None
+        from app.db.models.user_search import UserSearch
+        us = db.query(UserSearch).filter(UserSearch.id == us_id, UserSearch.enabled == True).first()
+        if not us:
+            return None
+        return SearchCandidate(
+            candidate_id=candidate_id,
+            role_id="user_search",
+            location_id="user_search",
+            role_canonical=us.query or "",
+            location_canonical=us.location or "",
+            priority=3,
+            tier=2
+        )
+    else:
+        taxonomy = get_authoritative_taxonomy()
+        parts = candidate_id.split("::")
+        if len(parts) != 2:
+            return None
+        rid, lid = parts
+        role = next((r for r in taxonomy.roles if r.id == rid), None)
+        location = next((l for l in taxonomy.locations if l.id == lid), None)
+        if not role or not location:
+            return None
+        return SearchCandidate(
+            candidate_id=candidate_id,
+            role_id=role.id,
+            location_id=location.id,
+            role_canonical=role.canonical,
+            location_canonical=location.canonical,
+            priority=min(role.priority, location.priority),
+            tier=location.tier
+        )
 
 
 def _get_history(db: Session, candidate_ids: List[str]) -> Dict[str, dict]:
@@ -118,7 +188,7 @@ def select_next_search(
     _clean_abandoned_claims(db, now)
 
     # 2. Generate bounds
-    candidates = generate_candidates()
+    candidates = generate_candidates(db)
     cids = [c.candidate_id for c in candidates]
 
     # 3. Fetch history

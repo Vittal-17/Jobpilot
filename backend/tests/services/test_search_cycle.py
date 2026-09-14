@@ -22,7 +22,7 @@ def test_cycle_race_exactly_one_claim(monkeypatch):
         priority=1,
         tier=0,
     )
-    monkeypatch.setattr("app.services.search_selector.generate_candidates", lambda: [candidate])
+    monkeypatch.setattr("app.services.search_selector.generate_candidates", lambda db=None: [candidate])
 
     db = SessionLocal()
     db.query(SearchExecutionModel).filter_by(candidate_id=candidate.candidate_id).delete()
@@ -85,7 +85,7 @@ def test_cycle_budget_exhaustion(monkeypatch):
             tier=0,
         ) for i in range(5)
     ]
-    monkeypatch.setattr("app.services.search_selector.generate_candidates", lambda: candidates)
+    monkeypatch.setattr("app.services.search_selector.generate_candidates", lambda db=None: candidates)
 
     barrier = threading.Barrier(5)
 
@@ -137,7 +137,7 @@ def test_different_cycles_independent(monkeypatch):
     # We must ensure they pick different candidates, or just rely on the concurrency handling. 
     # If they pick the same, one will fail and pick the next.
     
-    monkeypatch.setattr("app.services.search_selector.generate_candidates", lambda: [cand1, cand2])
+    monkeypatch.setattr("app.services.search_selector.generate_candidates", lambda db=None: [cand1, cand2])
 
     barrier = threading.Barrier(2)
 
@@ -191,7 +191,7 @@ def test_n8n_continue_on_fail_contract(monkeypatch):
     cand1 = SearchCandidate(candidate_id=f"MOCK::1-{uuid.uuid4()}", role_id="MOCK", location_id="1", role_canonical="M", location_canonical="1", priority=1, tier=0)
     cand2 = SearchCandidate(candidate_id=f"MOCK::2-{uuid.uuid4()}", role_id="MOCK", location_id="2", role_canonical="M", location_canonical="2", priority=1, tier=0)
     
-    monkeypatch.setattr("app.services.search_selector.generate_candidates", lambda: [cand1, cand2])
+    monkeypatch.setattr("app.services.search_selector.generate_candidates", lambda db=None: [cand1, cand2])
     monkeypatch.setattr("app.services.provider_router.route_provider", lambda db: ProviderSelectionResult(provider=ProviderName.ADZUNA, reason="test", policy_version="v1"))
     
     # Loop iteration 1
@@ -238,7 +238,7 @@ def test_n8n_continue_on_fail_contract(monkeypatch):
 def test_no_eligible_candidate(monkeypatch):
     cycle_id = str(uuid.uuid4())
     # No candidates generated
-    monkeypatch.setattr("app.services.search_selector.generate_candidates", lambda: [])
+    monkeypatch.setattr("app.services.search_selector.generate_candidates", lambda db=None: [])
 
     db = SessionLocal()
     result = select_next_search(db, cycle_id=cycle_id)

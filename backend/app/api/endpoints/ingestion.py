@@ -99,12 +99,10 @@ def internal_execute_search(intent: CanonicalSearchIntent, db: Session = Depends
             if selected_provider is None or selected_provider.value != claim.provider_name:
                 raise HTTPException(status_code=409, detail="Execution provider does not match routing decision")
 
-            from app.services.search_selector import generate_candidates
-            candidate = next(
-                (c for c in generate_candidates() if c.candidate_id == claim.candidate_id),
-                None,
-            )
+            from app.services.search_selector import resolve_candidate
+            candidate = resolve_candidate(db, claim.candidate_id)
             if candidate is None:
+                _best_effort_close_routing_claim(db, intent.execution_id, "stale candidate")
                 raise HTTPException(status_code=409, detail="Execution candidate is no longer valid")
 
             expected = (
