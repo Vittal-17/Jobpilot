@@ -1,0 +1,200 @@
+[
+  {
+    "id": "workflow-notifications",
+    "name": "JP - Notifications Delivery",
+    "active": false,
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "hours",
+                "hoursInterval": 4
+              }
+            ]
+          }
+        },
+        "id": "node-trigger",
+        "name": "Schedule",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1,
+        "position": [
+          100,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "http://fastapi:8000/ingestion/internal/notifications/claim",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "httpHeaderAuth",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={ \"user_id\": 1, \"delivery_id\": \"{{ $execution.id }}\", \"limit\": 5 }"
+        },
+        "id": "node-claim",
+        "name": "Claim Notifications",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.1,
+        "position": [
+          300,
+          300
+        ],
+        "credentials": {
+          "httpHeaderAuth": {
+            "id": "T0w0H2O4M9E6W4T6",
+            "name": "JP - FastAPI Internal API"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "typeValidation": "strict"
+            },
+            "conditions": [
+              {
+                "leftValue": "={{ $json.recommendations.length }}",
+                "rightValue": 0,
+                "operator": {
+                  "type": "number",
+                  "operation": "larger"
+                }
+              }
+            ],
+            "combinator": "and"
+          }
+        },
+        "id": "node-check-empty",
+        "name": "Check If Empty",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2.2,
+        "position": [
+          500,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const recs = $input.first().json.recommendations;\nconst escapeHtml = (unsafe) => {\n    return String(unsafe)\n         .replace(/&/g, \"&amp;\")\n         .replace(/</g, \"&lt;\")\n         .replace(/>/g, \"&gt;\")\n         .replace(/\"/g, \"&quot;\")\n         .replace(/'/g, \"&#039;\");\n};\nlet msg = \"\ud83d\ude80 <b>New Job Matches</b>\\n\\n\";\nrecs.forEach((job, idx) => {\n  const safeUrl = escapeHtml(encodeURI(job.url || \"\"));\n  const safeTitle = escapeHtml(job.title);\n  const safeCompany = escapeHtml(job.company);\n  msg += `${idx + 1}. <a href=\"${safeUrl}\">${safeTitle}</a>\\n`;\n  msg += `\ud83c\udfe2 ${safeCompany}\\n`;\n  if (job.location) msg += `\ud83d\udccd ${escapeHtml(job.location)}\\n`;\n  msg += `\\n`;\n});\nreturn { json: { message: msg, user_id: $input.first().json.user_id, delivery_id: $input.first().json.delivery_id } };"
+        },
+        "id": "node-format",
+        "name": "Format Payload",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          700,
+          200
+        ]
+      },
+      {
+        "parameters": {
+          "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
+          "text": "={{ $json.message }}",
+          "parseMode": "HTML"
+        },
+        "id": "node-telegram",
+        "name": "Send Telegram",
+        "type": "n8n-nodes-base.telegram",
+        "typeVersion": 1,
+        "position": [
+          900,
+          200
+        ],
+        "credentials": {
+          "telegramApi": {
+            "id": "telegram_bot",
+            "name": "Telegram Bot"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "http://fastapi:8000/ingestion/internal/notifications/acknowledge",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "httpHeaderAuth",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={ \"user_id\": 1, \"delivery_id\": \"{{ $execution.id }}\" }"
+        },
+        "id": "node-acknowledge",
+        "name": "Acknowledge Delivery",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.1,
+        "position": [
+          1100,
+          200
+        ],
+        "credentials": {
+          "httpHeaderAuth": {
+            "id": "T0w0H2O4M9E6W4T6",
+            "name": "JP - FastAPI Internal API"
+          }
+        }
+      }
+    ],
+    "connections": {
+      "Schedule": {
+        "main": [
+          [
+            {
+              "node": "Claim Notifications",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Claim Notifications": {
+        "main": [
+          [
+            {
+              "node": "Check If Empty",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Check If Empty": {
+        "main": [
+          [
+            {
+              "node": "Format Payload",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          []
+        ]
+      },
+      "Format Payload": {
+        "main": [
+          [
+            {
+              "node": "Send Telegram",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Send Telegram": {
+        "main": [
+          [
+            {
+              "node": "Acknowledge Delivery",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    }
+  }
+]
