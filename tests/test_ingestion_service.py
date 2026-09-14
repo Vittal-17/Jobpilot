@@ -24,13 +24,13 @@ def test_ingestion_service_success_and_duplicates(db_session: Session):
     provider = DummyProvider([job1, job2])
     query = JobSearchQuery(keywords="t", location="t")
 
-    result = run_ingestion(db_session, "adzuna", provider, query)
+    result, _ = run_ingestion(db_session, "adzuna", provider, query)
     assert result.fetched == 2
     assert result.created == 2
     assert result.duplicates == 0
 
     # Run again, should be duplicates
-    result2 = run_ingestion(db_session, "adzuna", provider, query)
+    result2, _ = run_ingestion(db_session, "adzuna", provider, query)
     assert result2.fetched == 2
     assert result2.created == 0
     assert result2.duplicates == 2

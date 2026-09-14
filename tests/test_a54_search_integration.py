@@ -170,7 +170,7 @@ def test_execute_claimed_search_outside_bounded_window(db_session, monkeypatch):
         claim.status = "succeeded"
         claim.completed_at = db.scalar(text("SELECT CURRENT_TIMESTAMP"))
         db.commit()
-        return IngestionResult(provider=ProviderName.ADZUNA, fetched=10, created=5, duplicates=5, invalid=0, failed=0)
+        return IngestionResult(provider=ProviderName.ADZUNA, fetched=10, created=5, duplicates=5, invalid=0, failed=0), []
 
     monkeypatch.setattr("app.api.endpoints.ingestion.run_ingestion", mock_run_ingestion)
 

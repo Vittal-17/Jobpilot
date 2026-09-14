@@ -39,7 +39,7 @@ def ingest_adzuna(query: JobSearchQuery, db: Session = Depends(get_db)):
 
     from app.providers.exceptions import ProviderConfigurationError
     try:
-        result = run_ingestion(db, "adzuna", provider, query)
+        result, job_ids = run_ingestion(db, "adzuna", provider, query)
 
         if result.failed > 0:
             raise HTTPException(status_code=502, detail="Adzuna provider failed")
@@ -65,7 +65,7 @@ def ingest_jooble(query: JobSearchQuery, db: Session = Depends(get_db)):
 
     from app.providers.exceptions import ProviderConfigurationError
     try:
-        result = run_ingestion(db, "jooble", provider, query)
+        result, job_ids = run_ingestion(db, "jooble", provider, query)
         if result.failed > 0:
             raise HTTPException(status_code=502, detail="Jooble provider failed")
         return result
@@ -134,10 +134,69 @@ def internal_execute_search(intent: CanonicalSearchIntent, db: Session = Depends
             page_size=20,
         )
 
-        result = run_ingestion(db, selected_provider.value, provider, query, intent.execution_id)
+        result, job_ids = run_ingestion(db, selected_provider.value, provider, query, intent.execution_id)
         if result.failed > 0:
-
             raise HTTPException(status_code=502, detail="Provider execution failed")
+
+        if intent.execution_id is not None and claim.candidate_id and claim.candidate_id.startswith("user_search::"):
+            try:
+                us_id = int(claim.candidate_id.split("::")[1])
+                from app.db.models.user_search import UserSearch
+                from app.db.models.user_profile import UserProfile
+                from app.schemas.match import RecommendationPreferences
+                from app.services.matching_service import calculate_match
+                from app.schemas.job import JobResponse
+                from app.db.models.job import JobModel
+                from sqlalchemy.dialects.postgresql import insert
+                from app.db.models.recommendation_history import RecommendationHistoryModel
+
+                u_search = db.query(UserSearch).filter(UserSearch.id == us_id).first()
+                if u_search and job_ids:
+                    u_profile = db.query(UserProfile).filter(UserProfile.user_id == u_search.user_id).first()
+                    prefs = RecommendationPreferences(
+                        preferred_roles=u_profile.preferred_roles if u_profile else None,
+                        skills=u_profile.skills if u_profile else None,
+                        preferred_locations=u_profile.preferred_locations if u_profile else None,
+                        remote_preference=u_profile.remote_preference if u_profile else None,
+                        experience_years=u_profile.experience_years if u_profile else None
+                    )
+
+                    jobs = db.query(JobModel).filter(JobModel.id.in_(job_ids)).all()
+
+                    # Filter out jobs already recommended to this user
+                    existing_recs = db.query(RecommendationHistoryModel.job_id).filter(
+                        RecommendationHistoryModel.user_id == u_search.user_id,
+                        RecommendationHistoryModel.job_id.in_(job_ids)
+                    ).all()
+                    existing_job_ids = {r[0] for r in existing_recs}
+
+                    scored_jobs = []
+                    for job in jobs:
+                        if job.id in existing_job_ids:
+                            continue
+                        job_resp = JobResponse.model_validate(job)
+                        match_res = calculate_match(job_resp, prefs)
+                        if match_res.score >= 50:
+                            scored_jobs.append((match_res.score, job.id))
+
+                    # Actually select the best jobs (top 5), not merely a match above a score threshold
+                    scored_jobs.sort(key=lambda x: (-x[0], x[1]))
+                    top_jobs = scored_jobs[:5]
+
+                    for score, job_id in top_jobs:
+                        stmt = insert(RecommendationHistoryModel).values(
+                            user_id=u_search.user_id,
+                            job_id=job_id
+                        ).on_conflict_do_nothing(
+                            index_elements=['user_id', 'job_id']
+                        )
+                        db.execute(stmt)
+                    db.commit()
+            except Exception as e:
+                db.rollback()
+                logger.exception("Failed to process recommendations")
+                raise HTTPException(status_code=500, detail="Failed to process recommendations")
+
         return result
     except RateLimitExceeded:
         raise HTTPException(status_code=429, detail="Provider request quota exceeded")

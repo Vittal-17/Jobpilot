@@ -17,11 +17,11 @@ def test_usage_limits(db_session: Session, monkeypatch):
     provider = DummyProvider()
 
     # Request 1 (should succeed)
-    res1 = run_ingestion(db_session, "jooble", provider, query)
+    res1, _ = run_ingestion(db_session, "jooble", provider, query)
     assert res1.failed == 0
 
     # Request 2 (should succeed)
-    res2 = run_ingestion(db_session, "jooble", provider, query)
+    res2, _ = run_ingestion(db_session, "jooble", provider, query)
     assert res2.failed == 0
 
     # Request 3 (should fail due to limit)

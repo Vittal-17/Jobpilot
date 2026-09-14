@@ -39,7 +39,7 @@ def test_insert_and_read_job(db_session):
         match_score=95,
     )
 
-    db_job = save_job(db_session, pydantic_job)
+    db_job, created = save_job(db_session, pydantic_job)
     assert db_job.id is not None
     assert db_job.title == "Software Engineer"
 
@@ -58,7 +58,7 @@ def test_nullable_fields_allowed(db_session):
         discovered_at=now,
     )
 
-    db_job = save_job(db_session, pydantic_job)
+    db_job, created = save_job(db_session, pydantic_job)
     assert db_job.salary_min is None
     assert db_job.remote is None
     assert db_job.location is None
@@ -81,8 +81,8 @@ def test_uniqueness_constraint(db_session):
         source_job_id="ABC",
         discovered_at=now,
     )
-    with pytest.raises(IntegrityError):
-        save_job(db_session, job2)
+    db_job2, created2 = save_job(db_session, job2)
+    assert created2 is False
 
 def test_invalid_score_db_constraint(db_session):
     now = datetime.now(timezone.utc)

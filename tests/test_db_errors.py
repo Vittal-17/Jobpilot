@@ -43,7 +43,7 @@ def test_run_ingestion_other_integrity_error_via_construct(db_session: Session):
     provider = DummyProvider2([job_bad])
     query = JobSearchQuery(keywords="t", location="t")
 
-    result = run_ingestion(db_session, "adzuna", provider, query)
+    result, _ = run_ingestion(db_session, "adzuna", provider, query)
 
     assert result.fetched == 1
     assert result.created == 0
