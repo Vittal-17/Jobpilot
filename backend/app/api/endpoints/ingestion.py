@@ -362,3 +362,111 @@ def select_next_search_endpoint(context: CycleContext | None = None, db: Session
         import logging
         logging.getLogger(__name__).exception("Selection engine failed")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+class NotificationClaimRequest(BaseModel):
+    user_id: int
+    delivery_id: str = Field(..., max_length=64, min_length=1)
+    limit: int = Field(5, ge=1, le=50)
+
+class NotificationRecommendation(BaseModel):
+    job_id: int
+    title: str
+    company: str
+    location: str | None
+    url: str | None
+
+class NotificationClaimResponse(BaseModel):
+    user_id: int
+    delivery_id: str
+    recommendations: list[NotificationRecommendation]
+
+class NotificationAcknowledgeRequest(BaseModel):
+    user_id: int
+    delivery_id: str = Field(..., max_length=64, min_length=1)
+
+class NotificationAcknowledgeResponse(BaseModel):
+    user_id: int
+    delivery_id: str
+    acknowledged: bool
+
+@router.post("/internal/notifications/claim", response_model=NotificationClaimResponse, dependencies=[Depends(verify_api_key)])
+def claim_notifications(req: NotificationClaimRequest, db: Session = Depends(get_db)):
+    try:
+        from sqlalchemy.exc import IntegrityError
+
+        # 1. Try to record the delivery intent first
+        try:
+            with db.begin_nested():
+                db.execute(
+                    text("INSERT INTO notification_deliveries (delivery_id, user_id, claimed_at) VALUES (:delivery_id, :user_id, CURRENT_TIMESTAMP)"),
+                    {"delivery_id": req.delivery_id, "user_id": req.user_id}
+                )
+
+                # 2. Race-safe claim using UPDATE ... WHERE id IN (...)
+                claimed = db.execute(
+                    text("""
+                    WITH claim AS (
+                        SELECT id FROM recommendation_history
+                        WHERE user_id = :user_id AND delivery_id IS NULL
+                        ORDER BY recommended_at ASC
+                        LIMIT :limit
+                        FOR UPDATE SKIP LOCKED
+                    )
+                    UPDATE recommendation_history r
+                    SET delivery_id = :delivery_id
+                    FROM claim
+                    WHERE r.id = claim.id
+                    RETURNING r.job_id
+                    """),
+                    {"user_id": req.user_id, "delivery_id": req.delivery_id, "limit": req.limit}
+                ).scalars().all()
+        except IntegrityError:
+            # 3. Idempotency: The delivery_id already exists.
+            # We must verify it belongs to THIS user to prevent silent cross-user collisions.
+            db.rollback()
+            owner = db.execute(
+                text("SELECT user_id FROM notification_deliveries WHERE delivery_id = :delivery_id"),
+                {"delivery_id": req.delivery_id}
+            ).scalar()
+            if owner is not None and owner != req.user_id:
+                raise HTTPException(status_code=409, detail="delivery_id conflict")
+
+        # Fetch jobs assigned to this delivery_id (whether newly claimed or previously claimed)
+        jobs = db.execute(
+            text("""
+            SELECT j.id as job_id, j.title, j.company, j.location, j.url
+            FROM recommendation_history r
+            JOIN jobs j ON r.job_id = j.id
+            WHERE r.user_id = :user_id AND r.delivery_id = :delivery_id
+            ORDER BY r.recommended_at ASC
+            """),
+            {"user_id": req.user_id, "delivery_id": req.delivery_id}
+        ).mappings().all()
+
+        db.commit()
+        return NotificationClaimResponse(
+            user_id=req.user_id,
+            delivery_id=req.delivery_id,
+            recommendations=[NotificationRecommendation(**j) for j in jobs]
+        )
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        import logging
+        logging.getLogger(__name__).exception("Failed to claim notifications")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.post("/internal/notifications/acknowledge", response_model=NotificationAcknowledgeResponse, dependencies=[Depends(verify_api_key)])
+def acknowledge_notifications(req: NotificationAcknowledgeRequest, db: Session = Depends(get_db)):
+    try:
+        result = db.execute(
+            text("UPDATE notification_deliveries SET notified_at = CURRENT_TIMESTAMP WHERE user_id = :user_id AND delivery_id = :delivery_id AND notified_at IS NULL"),
+            {"user_id": req.user_id, "delivery_id": req.delivery_id}
+        )
+        db.commit()
+        return NotificationAcknowledgeResponse(user_id=req.user_id, delivery_id=req.delivery_id, acknowledged=result.rowcount > 0)
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Internal server error")

@@ -11,6 +11,7 @@ from .application import Application
 from .user_search import UserSearch
 from .job_source import JobSourceModel
 from .recommendation_history import RecommendationHistoryModel
+from .notification_delivery import NotificationDeliveryModel
 
 __all__ = [
     "JobModel",
@@ -25,5 +26,6 @@ __all__ = [
     "Application",
     "UserSearch",
     "JobSourceModel",
-    "RecommendationHistoryModel"
+    "RecommendationHistoryModel",
+    "NotificationDeliveryModel"
 ]

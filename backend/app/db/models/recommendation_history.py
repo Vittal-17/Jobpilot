@@ -11,6 +11,7 @@ class RecommendationHistoryModel(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True)
     recommended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+    delivery_id: Mapped[str | None] = mapped_column(ForeignKey("notification_deliveries.delivery_id", ondelete="SET NULL"), index=True, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("user_id", "job_id", name="uq_recommendation_history_user_job"),
