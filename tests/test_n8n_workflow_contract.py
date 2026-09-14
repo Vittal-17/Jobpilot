@@ -70,8 +70,12 @@ def test_notifications_workflow_contract():
     assert "$execution.id" in ack["parameters"]["jsonBody"]
 
     check_empty = nodes["Check If Empty"]
-    assert check_empty["parameters"]["conditions"]["conditions"][0]["leftValue"] == "={{ $json.recommendations.length }}"
-    assert check_empty["parameters"]["conditions"]["conditions"][0]["rightValue"] == 0
+    condition = check_empty["parameters"]["conditions"]["conditions"][0]
+    assert condition["leftValue"] == "={{ $json.recommendations.length }}"
+    assert condition["rightValue"] == 0
+    assert condition.get("id") is not None, "Check If Empty condition must have an 'id' to be recognized by n8n UI"
+    assert condition.get("operator", {}).get("type") == "number"
+    assert condition.get("operator", {}).get("operation") == "larger"
 
     assert workflow["active"] is False
 
@@ -151,5 +155,85 @@ def test_notifications_workflow_escaping():
         assert "Company &quot;A&quot; &gt; B" in msg
         assert "O&#039;Reilly &amp; Sons" in msg
         assert "https://example.com/job?id=1&amp;ref=abc%22def" in msg
+    finally:
+        Path(temp_path).unlink()
+
+def test_telegram_node_contract():
+    import json
+    from pathlib import Path
+    workflows = json.loads(Path("backend/JP___Notifications.json").read_text(encoding="utf-8"))
+    workflow = workflows[0]
+    nodes = workflow.get("nodes", [])
+
+    telegram_nodes = [n for n in nodes if n.get("type") == "n8n-nodes-base.telegram"]
+    assert len(telegram_nodes) == 1, "Expected exactly one Telegram node"
+    t_node = telegram_nodes[0]
+
+    # Verify runtime variable wiring and no hardcoded chat ID
+    params = t_node.get("parameters", {})
+    assert params.get("chatId") == "={{ $env.TELEGRAM_CHAT_ID }}", "chatId must be dynamically wired to environment"
+
+    # Verify no hardcoded token in the file
+    workflow_str = json.dumps(workflow)
+    import re
+    # Match common telegram bot token format (e.g. 123456789:ABCDefGHIJK...)
+    assert not re.search(r'\d{8,10}:[a-zA-Z0-9_-]{35}', workflow_str), "Workflow contains a hardcoded Telegram bot token!"
+
+    # Verify no-retry behavior on Telegram node
+    retry_settings = t_node.get("retryOnFail", False)
+    assert retry_settings is False, "Telegram node MUST NOT automatically retry to preserve at-most-once delivery"
+
+    # Verify connectivity: Claim -> Format -> Telegram -> Ack
+    # We trace connections from the JSON
+    connections = workflow.get("connections", {})
+
+    # 'Format Payload' -> 'Send Telegram'
+    format_conn = connections.get("Format Payload", {}).get("main", [])
+    assert any(c.get("node") == "Send Telegram" for c in format_conn[0]), "Format Payload must connect to Send Telegram"
+
+    # 'Send Telegram' -> 'Acknowledge Delivery'
+    t_conn = connections.get("Send Telegram", {}).get("main", [])
+    assert any(c.get("node") == "Acknowledge Delivery" for c in t_conn[0]), "Send Telegram must connect to Acknowledge Delivery"
+
+def test_notifications_workflow_condition_evaluation():
+    import subprocess
+    import tempfile
+
+    workflows = json.loads(
+        Path("backend/JP___Notifications.json").read_text(encoding="utf-8")
+    )
+    workflow = workflows[0]
+    nodes = {node["name"]: node for node in workflow["nodes"]}
+    condition_def = nodes["Check If Empty"]["parameters"]["conditions"]["conditions"][0]
+
+    # We want to test that leftValue ({{ $json.recommendations.length }}) > rightValue (0)
+    # n8n evaluates {{ expression }} as JavaScript.
+
+    left_expression = condition_def["leftValue"].strip("=").strip("{}").strip()
+    right_value = condition_def["rightValue"]
+
+    # We will wrap it in a Node.js script to evaluate the expression against empty and non-empty arrays
+    wrapper = f"""
+    function evaluate(payload) {{
+        const $json = payload;
+        const leftValue = {left_expression};
+        return leftValue > {right_value};
+    }}
+
+    console.log(JSON.stringify({{
+        empty: evaluate({{ recommendations: [] }}),
+        one: evaluate({{ recommendations: [{{ id: 1 }}] }})
+    }}));
+    """
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.js', delete=False) as f:
+        f.write(wrapper)
+        temp_path = f.name
+
+    try:
+        result = subprocess.run(["node", temp_path], capture_output=True, text=True, check=True)
+        output = json.loads(result.stdout)
+        assert output["empty"] is False, "Condition must evaluate to FALSE for 0 recommendations"
+        assert output["one"] is True, "Condition must evaluate to TRUE for >0 recommendations"
     finally:
         Path(temp_path).unlink()
