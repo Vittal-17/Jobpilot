@@ -8,6 +8,7 @@ from .user_session import UserSession
 from .user_profile import UserProfile
 from .saved_job import SavedJob
 from .application import Application
+from .user_search import UserSearch
 
 __all__ = [
     "JobModel",
@@ -19,5 +20,6 @@ __all__ = [
     "UserSession",
     "UserProfile",
     "SavedJob",
-    "Application"
+    "Application",
+    "UserSearch"
 ]
