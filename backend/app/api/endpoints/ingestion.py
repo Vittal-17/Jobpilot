@@ -209,7 +209,16 @@ def select_next_search_endpoint(context: CycleContext | None = None, db: Session
         if result.candidate:
             try:
                 provider_decision = route_provider(db)
-            except (ProviderNotConfigured, ProviderUnavailable, ProviderQuotaExhausted):
+            except ProviderQuotaExhausted:
+                _best_effort_close_routing_claim(
+                    db, result.execution_id, "daily_provider_budget_exhausted"
+                )
+                return SelectionResponse(
+                    action="stop",
+                    reason="daily_provider_budget_exhausted",
+                    policy_version=result.policy_version if hasattr(result, "policy_version") else "v1"
+                )
+            except (ProviderNotConfigured, ProviderUnavailable):
                 _best_effort_close_routing_claim(
                     db, result.execution_id, "provider routing failed"
                 )
@@ -280,8 +289,6 @@ def select_next_search_endpoint(context: CycleContext | None = None, db: Session
                 score=result.score,
                 policy_version=result.policy_version
             )
-    except ProviderQuotaExhausted:
-        raise HTTPException(status_code=429, detail="All providers are quota exhausted")
     except (ProviderNotConfigured, ProviderUnavailable):
         raise HTTPException(status_code=503, detail="No provider is available")
     except ProviderRoutingUnavailable:
