@@ -57,7 +57,9 @@
           "conditions": {
             "options": {
               "caseSensitive": true,
-              "typeValidation": "strict"
+              "typeValidation": "strict",
+              "version": 2,
+              "leftValue": ""
             },
             "conditions": [
               {

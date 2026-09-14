@@ -70,6 +70,12 @@ def test_notifications_workflow_contract():
     assert "$execution.id" in ack["parameters"]["jsonBody"]
 
     check_empty = nodes["Check If Empty"]
+
+    # Prove the required UI schema fields exist in options
+    options = check_empty["parameters"]["conditions"]["options"]
+    assert options.get("version") == 2, "Filter component requires version: 2 for typeVersion 2.2 UI rendering"
+    assert "leftValue" in options, "Filter component expects a global leftValue in options"
+
     condition = check_empty["parameters"]["conditions"]["conditions"][0]
     assert condition["leftValue"] == "={{ $json.recommendations.length }}"
     assert condition["rightValue"] == 0
