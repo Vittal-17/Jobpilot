@@ -68,7 +68,7 @@
                 "rightValue": 0,
                 "operator": {
                   "type": "number",
-                  "operation": "larger"
+                  "operation": "gt"
                 }
               }
             ],
