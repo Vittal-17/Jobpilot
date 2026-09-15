@@ -81,7 +81,7 @@ def test_notifications_workflow_contract():
     assert condition["rightValue"] == 0
     assert condition.get("id") is not None, "Check If Empty condition must have an 'id' to be recognized by n8n UI"
     assert condition.get("operator", {}).get("type") == "number"
-    assert condition.get("operator", {}).get("operation") == "larger"
+    assert condition.get("operator", {}).get("operation") == "gt"
 
     assert workflow["active"] is False
 
