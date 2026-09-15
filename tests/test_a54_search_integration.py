@@ -228,7 +228,7 @@ def test_taxonomy_search_generates_recommendations(db_session, monkeypatch):
 
         # Create a job that perfectly matches the user profile
         job = JobModel(
-            title="Senior Python Developer", company="DeepMind", source="adzuna",
+            title="Python Developer Fresher", company="DeepMind", source="adzuna",
             source_job_id="tax_job_1", canonical_hash="hash_tax_1",
             discovered_at=datetime.now(timezone.utc)
         )

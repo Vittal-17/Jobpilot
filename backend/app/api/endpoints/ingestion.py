@@ -176,6 +176,10 @@ def internal_execute_search(intent: CanonicalSearchIntent, db: Session = Depends
                             if job.id in existing_job_ids:
                                 continue
                             job_resp = JobResponse.model_validate(job)
+                            from app.services.eligibility import is_fresher_eligible
+                            if not is_fresher_eligible(job_resp.title, job_resp.description):
+                                continue
+
                             match_res = calculate_match(job_resp, prefs)
                             if match_res.score >= 50:
                                 scored_jobs.append((match_res.score, job.id))

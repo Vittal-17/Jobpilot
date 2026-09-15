@@ -299,7 +299,7 @@ def test_recommendation_deterministic_tie_breaking(db_session: Session):
     jobs = []
     for i in range(10):
         j = JobModel(
-            title=f"Python Engineer {i}", company=f"Tie Company {i}", source="adzuna",
+            title=f"Python Engineer Fresher {i}", company=f"Tie Company {i}", source="adzuna",
             source_job_id=f"tie_{i}", canonical_hash=f"tie_hash_{i}", match_score=0,
             discovered_at=datetime.now(timezone.utc)
         )
@@ -356,7 +356,7 @@ def test_recommendation_top_5_batch_selection_and_exclusion(db_session: Session)
     batch1_job_ids = []
     for i in range(10):
         j = JobModel(
-            title=f"Python Engineer {i}", company=f"Company {i}", source="adzuna",
+            title=f"Python Engineer Fresher {i}", company=f"Company {i}", source="adzuna",
             source_job_id=f"b1_{i}", canonical_hash=f"b1_hash_{i}", match_score=0,
             discovered_at=datetime.now(timezone.utc)
         )
@@ -386,7 +386,7 @@ def test_recommendation_top_5_batch_selection_and_exclusion(db_session: Session)
     batch2_job_ids = []
     for i in range(10):
         j = JobModel(
-            title=f"Senior Python Engineer Fresh {i}", company=f"Company Fresh {i}", source="adzuna",
+            title=f"Python Engineer Fresher Fresher Fresh {i}", company=f"Company Fresh {i}", source="adzuna",
             source_job_id=f"b2_{i}", canonical_hash=f"b2_hash_{i}", match_score=0,
             discovered_at=datetime.now(timezone.utc)
         )
@@ -461,7 +461,7 @@ def test_recommendation_failure_propagation(db_session: Session):
     )
 
     j = JobModel(
-        title="Python Engineer Fail", company="Fail Corp", source="adzuna",
+        title="Python Engineer Fresher Fail", company="Fail Corp", source="adzuna",
         source_job_id="fail_1", canonical_hash="fail_hash_1", match_score=0,
         discovered_at=datetime.now(timezone.utc)
     )
