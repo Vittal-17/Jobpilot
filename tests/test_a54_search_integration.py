@@ -21,23 +21,9 @@ def test_user_search_candidate_generation(db_session):
 
     candidates = generate_candidates(db_session)
 
-    # Assert enabled search is present
+    # Assert enabled search is NOT present
     us1_candidate = next((c for c in candidates if c.candidate_id == f"user_search::{us1.id}"), None)
-    assert us1_candidate is not None
-    assert us1_candidate.role_canonical == "Python"
-    assert us1_candidate.location_canonical == "Remote"
-    assert us1_candidate.role_id == "user_search"
-
-    # Assert disabled search is excluded
-    us2_candidate = next((c for c in candidates if c.candidate_id == f"user_search::{us2.id}"), None)
-    assert us2_candidate is None
-
-    # Test deleted search is excluded
-    db_session.delete(us1)
-    db_session.commit()
-    candidates_after_delete = generate_candidates(db_session)
-    us1_candidate_after = next((c for c in candidates_after_delete if c.candidate_id == f"user_search::{us1.id}"), None)
-    assert us1_candidate_after is None
+    assert us1_candidate is None
 
 def test_select_next_search_picks_user_search(db_session):
     # Setup user
@@ -50,12 +36,8 @@ def test_select_next_search_picks_user_search(db_session):
     db_session.add(us)
     db_session.commit()
 
-    # Call select_next_search
-    # It should pick a candidate. Since we don't know exact priorities of taxonomy vs user search,
-    # we can just keep calling select_next_search until it picks our user search or stops.
-    # Note: cycle_id is None for unbudgeted loop.
     found = False
-    for _ in range(1000):
+    for _ in range(100):
         result = select_next_search(db_session, cycle_id=None)
         if result.action == 'execute' and result.candidate.candidate_id == f"user_search::{us.id}":
             found = True
@@ -63,7 +45,7 @@ def test_select_next_search_picks_user_search(db_session):
         if result.action == 'stop':
             break
 
-    assert found is True, "UserSearch was not selected by the execution engine"
+    assert found is False, "UserSearch should NOT be selected by the execution engine"
 
 def test_user_search_candidate_generation_is_bounded(db_session):
     u = User(email="bounded@example.com", password_hash=get_password_hash("pass"))
@@ -204,3 +186,72 @@ def test_malformed_user_search_candidate_ids(db_session):
     ]
     for bad_id in malformed_ids:
         assert resolve_candidate(db_session, bad_id) is None
+
+def test_taxonomy_search_generates_recommendations(db_session, monkeypatch):
+    """Proves that an autonomous taxonomy search matches against active users and populates their recommendation history."""
+    from app.db.models.search_execution import SearchExecutionModel
+    from app.schemas.job_search import CanonicalSearchIntent
+    from app.api.endpoints.ingestion import internal_execute_search
+    from app.db.models.user_profile import UserProfile
+    from app.db.models.recommendation_history import RecommendationHistoryModel
+
+    # Setup a user with an enabled search (to mark them active) and a profile
+    u = User(email="taxonomy_test@example.com", password_hash="pass")
+    db_session.add(u)
+    db_session.commit()
+
+    prof = UserProfile(user_id=u.id, preferred_roles="Autonomy Engineer", skills="Python")
+    us = UserSearch(user_id=u.id, query="Autonomy", location="London", enabled=True)
+    db_session.add_all([prof, us])
+    db_session.commit()
+
+    # Manually create a claim for a taxonomy search
+    claim = SearchExecutionModel(
+        candidate_id="ROLE-PY-001::LOC-BLR-001",
+        status='selected',
+        selected_at=db_session.scalar(text("SELECT CURRENT_TIMESTAMP")),
+        provider_name="adzuna"
+    )
+    db_session.add(claim)
+    db_session.commit()
+
+    # Mock run_ingestion to return a successfully saved job
+    from app.services.ingestion import IngestionResult
+    from app.providers.types import ProviderName
+    from app.db.models.job import JobModel
+    from datetime import datetime, timezone
+
+    def mock_run_ingestion(db, provider_name, provider_client, query, execution_id):
+        claim = db.query(SearchExecutionModel).filter_by(id=execution_id).first()
+        claim.status = "succeeded"
+        claim.completed_at = db.scalar(text("SELECT CURRENT_TIMESTAMP"))
+
+        # Create a job that perfectly matches the user profile
+        job = JobModel(
+            title="Senior Python Developer", company="DeepMind", source="adzuna",
+            source_job_id="tax_job_1", canonical_hash="hash_tax_1",
+            discovered_at=datetime.now(timezone.utc)
+        )
+        db.add(job)
+        db.flush()
+        db.commit()
+
+        return IngestionResult(provider=ProviderName.ADZUNA, fetched=1, created=1, duplicates=0, invalid=0, failed=0), [job.id]
+
+    monkeypatch.setattr("app.api.endpoints.ingestion.run_ingestion", mock_run_ingestion)
+
+    payload = CanonicalSearchIntent(
+        role_id="ROLE-PY-001",
+        keywords="Python Developer",
+        location_id="LOC-BLR-001",
+        location="Bengaluru",
+        priority=1,
+        execution_id=claim.id,
+        provider="adzuna"
+    )
+
+    internal_execute_search(payload, db_session)
+
+    # Assert that the user received the recommendation despite this NOT being a user_search execution
+    recs = db_session.query(RecommendationHistoryModel).filter(RecommendationHistoryModel.user_id == u.id).all()
+    assert len(recs) == 1, "Taxonomy search failed to generate recommendations for active users"

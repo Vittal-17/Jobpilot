@@ -46,32 +46,7 @@ def generate_candidates(db: Optional[Session] = None) -> List[SearchCandidate]:
                 tier=location.tier
             ))
 
-    if db is not None:
-        stmt = text("""
-            SELECT us.id, us.query, us.location
-            FROM user_searches us
-            LEFT JOIN (
-                SELECT candidate_id, MAX(selected_at) as last_selected
-                FROM search_execution
-                WHERE candidate_id LIKE 'user_search::%'
-                GROUP BY candidate_id
-            ) se ON se.candidate_id = 'user_search::' || us.id::text
-            WHERE us.enabled = true
-            ORDER BY se.last_selected ASC NULLS FIRST, us.id ASC
-            LIMIT 500
-        """)
-        rows = db.execute(stmt).fetchall()
-        for row in rows:
-            cid = f"user_search::{row.id}"
-            candidates.append(SearchCandidate(
-                candidate_id=cid,
-                role_id="user_search",
-                location_id="user_search",
-                role_canonical=row.query or "",
-                location_canonical=row.location or "",
-                priority=3, # Integrates with taxonomy without unconditional top priority
-                tier=2
-            ))
+    # Ad-hoc user queries are no longer injected into the autonomous taxonomy loop
 
     # Sort deterministically
     candidates.sort(key=lambda c: (c.priority, c.tier, c.candidate_id))
