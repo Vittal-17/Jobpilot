@@ -101,7 +101,9 @@
         "parameters": {
           "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
           "text": "={{ $json.message }}",
-          "parseMode": "HTML"
+          "additionalFields": {
+            "parse_mode": "HTML"
+          }
         },
         "id": "node-telegram",
         "name": "Send Telegram",

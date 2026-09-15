@@ -178,6 +178,7 @@ def test_telegram_node_contract():
     # Verify runtime variable wiring and no hardcoded chat ID
     params = t_node.get("parameters", {})
     assert params.get("chatId") == "={{ $env.TELEGRAM_CHAT_ID }}", "chatId must be dynamically wired to environment"
+    assert params.get("additionalFields", {}).get("parse_mode") == "HTML", "Telegram node must strictly configure parse_mode=HTML inside additionalFields"
 
     # Verify no hardcoded token in the file
     workflow_str = json.dumps(workflow)
