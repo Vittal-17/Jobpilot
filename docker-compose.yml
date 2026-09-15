@@ -100,6 +100,8 @@ services:
       # Execution History / Retention (Keep VPS disk usage small)
       - EXECUTIONS_DATA_PRUNE=true
       - EXECUTIONS_DATA_MAX_AGE=168
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
     ports:
       - "127.0.0.1:5678:5678"
     volumes:

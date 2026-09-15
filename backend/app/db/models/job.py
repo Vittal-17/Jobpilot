@@ -28,6 +28,8 @@ class JobModel(Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     match_score: Mapped[int | None] = mapped_column(Integer)
 
+    canonical_hash: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 

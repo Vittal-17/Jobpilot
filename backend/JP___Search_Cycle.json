@@ -5,10 +5,19 @@
     "active": false,
     "nodes": [
       {
-        "parameters": {},
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "hours",
+                "hoursInterval": 6
+              }
+            ]
+          }
+        },
         "id": "node-trigger",
         "name": "Start",
-        "type": "n8n-nodes-base.manualTrigger",
+        "type": "n8n-nodes-base.scheduleTrigger",
         "typeVersion": 1,
         "position": [100, 300]
       },

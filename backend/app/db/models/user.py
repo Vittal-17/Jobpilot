@@ -19,6 +19,7 @@ class User(Base):
 
     sessions: Mapped[list["UserSession"]] = relationship(back_populates="user", cascade="all, delete-orphan")
     profile: Mapped["UserProfile"] = relationship(back_populates="user", uselist=False, cascade="all, delete-orphan")
+    searches: Mapped[list["UserSearch"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
     __table_args__ = (
         Index("ix_users_email_lower", text("lower(email)"), unique=True),

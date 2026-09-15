@@ -23,7 +23,7 @@ def test_real_postgres_same_candidate_claim_contention(monkeypatch):
         tier=0,
     )
     monkeypatch.setattr(
-        "app.services.search_selector.generate_candidates", lambda: [candidate]
+        "app.services.search_selector.generate_candidates", lambda db=None: [candidate]
     )
 
 
@@ -85,7 +85,7 @@ def test_active_claim_blocks_started_state(monkeypatch):
         tier=0,
     )
     monkeypatch.setattr(
-        "app.services.search_selector.generate_candidates", lambda: [candidate]
+        "app.services.search_selector.generate_candidates", lambda db=None: [candidate]
     )
 
     db = SessionLocal()

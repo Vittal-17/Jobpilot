@@ -17,11 +17,13 @@ except ImportError:
 def clean_locks():
     deploy.release_lock()
     if os.path.exists(".deploy_pending.json"): os.remove(".deploy_pending.json")
+    if os.path.exists(".deploy_pending.json.tmp"): os.remove(".deploy_pending.json.tmp")
     if os.path.exists(".current_release.json"): os.remove(".current_release.json")
     if os.path.exists("backups"): shutil.rmtree("backups")
     yield
     deploy.release_lock()
     if os.path.exists(".deploy_pending.json"): os.remove(".deploy_pending.json")
+    if os.path.exists(".deploy_pending.json.tmp"): os.remove(".deploy_pending.json.tmp")
     if os.path.exists(".current_release.json"): os.remove(".current_release.json")
     if os.path.exists("backups"): shutil.rmtree("backups")
 

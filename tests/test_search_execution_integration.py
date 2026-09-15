@@ -81,7 +81,7 @@ def test_ingestion_lifecycle_records_actual_metrics(db_session):
     claim = _claim(db_session)
     selected_at = claim.selected_at
 
-    result = run_ingestion(
+    result, _ = run_ingestion(
         db_session,
         "adzuna",
         EmptyProvider(),

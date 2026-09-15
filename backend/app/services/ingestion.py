@@ -157,8 +157,9 @@ def acquire_provider_request_slot(db: Session, provider_name: str) -> bool:
         logger.exception("Failed to acquire provider quota provider_name=%s", provider_name)
         raise DatabaseUnavailable("Quota database unavailable")
 
-def run_ingestion(db: Session, provider_name: str, provider: JobProvider, query: JobSearchQuery, execution_id: int | None = None) -> IngestionResult:
+def run_ingestion(db: Session, provider_name: str, provider: JobProvider, query: JobSearchQuery, execution_id: int | None = None) -> tuple[IngestionResult, list[int]]:
     result = IngestionResult(provider=provider_name)
+    job_ids = []
 
     if execution_id is not None:
         result_transition = db.execute(
@@ -208,21 +209,25 @@ def run_ingestion(db: Session, provider_name: str, provider: JobProvider, query:
         if execution_id is not None:
             _fail_execution(db, execution_id, str(e))
         result.failed = 1
-        return result
+        return result, job_ids
     except Exception as e:
         logger.error(f"Provider {provider_name} failed due to unexpected error: failure_type={e.__class__.__name__}")
         if execution_id is not None:
             _fail_execution(db, execution_id, str(e))
         result.failed = 1
-        return result
+        return result, job_ids
 
     result.fetched = len(jobs)
 
     for job in jobs:
         try:
             with db.begin_nested():
-                save_job(db, job)
-            result.created += 1
+                db_job, created = save_job(db, job)
+                job_ids.append(db_job.id)
+            if created:
+                result.created += 1
+            else:
+                result.duplicates += 1
         except IntegrityError as e:
             if hasattr(e.orig, "sqlstate") and e.orig.sqlstate == "23505":
                 result.duplicates += 1
@@ -248,4 +253,4 @@ def run_ingestion(db: Session, provider_name: str, provider: JobProvider, query:
             },
         )
     db.commit()
-    return result
+    return result, job_ids

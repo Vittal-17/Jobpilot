@@ -103,7 +103,7 @@ def test_select_next_search_does_not_swallow_arbitrary_integrity_error(monkeypat
         tier=0,
     )
     monkeypatch.setattr(
-        "app.services.search_selector.generate_candidates", lambda: [candidate]
+        "app.services.search_selector.generate_candidates", lambda db=None: [candidate]
     )
 
     class MockOrig:
