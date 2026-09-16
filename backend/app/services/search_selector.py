@@ -156,6 +156,32 @@ def _get_history(db: Session, candidate_ids: List[str]) -> Dict[str, dict]:
         }
     return history
 
+
+def _get_variant_history(db: Session, candidate_ids: List[str]) -> Dict[str, Dict[str, dict]]:
+    if not candidate_ids:
+        return {}
+
+    stmt = text("""
+        SELECT DISTINCT ON (candidate_id, query_variant)
+               candidate_id, query_variant, jobs_fetched, jobs_fresher_eligible, completed_at
+        FROM search_execution
+        WHERE candidate_id = ANY(:cids)
+          AND status = 'succeeded'
+          AND query_variant IS NOT NULL
+        ORDER BY candidate_id, query_variant, completed_at DESC
+    """)
+    rows = db.execute(stmt, {"cids": candidate_ids}).fetchall()
+
+    vh = {cid: {} for cid in candidate_ids}
+    for row in rows:
+        cid, variant, fetched, eligible, comp_at = row
+        vh[cid][variant] = {
+            "fetched": fetched or 0,
+            "eligible": eligible if eligible is not None else -1,
+            "completed_at": comp_at
+        }
+    return vh
+
 def _clean_abandoned_claims(db: Session, reference_time: datetime | None = None) -> int:
     """Fails claims that were selected more than 15 minutes ago but never transitioned to started.
 
@@ -208,36 +234,61 @@ def select_next_search(
 
     cooldown_success = timedelta(hours=SUCCESS_COOLDOWN_HOURS)
     cooldown_selected = timedelta(minutes=ABANDONED_CLAIM_MINUTES)
+    penalty_duration = timedelta(days=7)
 
-    # 4. Evaluate eligibility and rank
-    eligible = []
+    # 4. Evaluate eligibility
+    pre_eligible = []
     for c in candidates:
         h = history.get(c.candidate_id, {})
         last_success = h.get("last_success")
         last_selected = h.get("last_selected")
 
-        # Freshness Check
         if last_selected and (now - last_selected) < cooldown_selected:
-            continue # Claimed/in-flight
+            continue
         if last_success and (now - last_success) < cooldown_success:
-            continue # Recently searched
+            continue
 
-        # Score calculation (lower is better for ranking)
-        # Priority (1-3) is heavily weighted.
-        # Tier (0-2) is secondary.
+        pre_eligible.append((c, h))
+
+    # Fetch variant histories just for pre_eligible
+    cids_eligible = [c.candidate_id for c, _ in pre_eligible]
+    variant_histories = _get_variant_history(db, cids_eligible)
+
+    eligible = []
+    for c, h in pre_eligible:
         score = (c.priority * 100) + (c.tier * 10)
+        last_selected = h.get("last_selected")
+        last_success = h.get("last_success")
 
         if last_selected is None:
-            # A. Never attempted
             score -= 1000
         elif last_success is None:
-            # B. Previously failed (attempted, but no success yet)
             score -= 500
-        # C. Previously succeeded (but off cooldown) gets no bonus.
 
         success_count = h.get("success_count", 0)
+
         if c.variants:
-            c.query_variant = c.variants[success_count % len(c.variants)]
+            v_hist = variant_histories.get(c.candidate_id, {})
+            available = []
+
+            for v in c.variants:
+                vh = v_hist.get(v)
+                if not vh:
+                    available.append(v)
+                    continue
+
+                # Check WEAK/NO-YIELD condition
+                is_weak_or_no_yield = (vh["eligible"] == 0)
+                is_recent = (now - vh["completed_at"]) < penalty_duration
+
+                if is_weak_or_no_yield and is_recent:
+                    continue # Penalized
+                available.append(v)
+
+            if not available:
+                available = c.variants # Fallback: all penalized
+
+            c.query_variant = available[success_count % len(available)]
         else:
             c.query_variant = c.role_canonical
 
@@ -275,7 +326,8 @@ def select_next_search(
                     candidate_id=candidate.candidate_id,
                     status='selected',
                     selected_at=now,
-                    cycle_id=cycle_id
+                    cycle_id=cycle_id,
+                    query_variant=candidate.query_variant
                 )
                 db.add(claim)
                 db.flush() # Force IntegrityError if concurrent insert
