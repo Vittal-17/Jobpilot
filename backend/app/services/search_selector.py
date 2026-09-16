@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timezone, timedelta
 from typing import Callable, Optional, List, Dict
 import logging
@@ -26,7 +27,39 @@ class SelectionResult(BaseModel):
     score: Optional[int] = None
     policy_version: str = "v1"
 
+def _build_bounded_variants(canonical: str, aliases: List[str]) -> List[str]:
+    fresher_pattern = re.compile(r'\b(fresher|junior|jr\.?|entry[- ]level|graduate|trainee)\b', re.IGNORECASE)
+
+    seen_normalized = set()
+    fresher_aliases = []
+
+    for alias in aliases:
+        if fresher_pattern.search(alias):
+            # Normalize: lower case, hyphens to spaces, collapse spaces
+            norm = re.sub(r'[\s\-]+', ' ', alias).strip().lower()
+            if norm not in seen_normalized:
+                seen_normalized.add(norm)
+                fresher_aliases.append(alias)
+
+    if fresher_aliases:
+        def sort_key(a):
+            norm = re.sub(r'[\s\-]+', ' ', a).strip().lower()
+            return (len(norm), norm)
+
+        fresher_aliases.sort(key=sort_key)
+        best_fresher = fresher_aliases[0]
+
+        canon_norm = re.sub(r'[\s\-]+', ' ', canonical).strip().lower()
+        best_norm = re.sub(r'[\s\-]+', ' ', best_fresher).strip().lower()
+
+        if canon_norm == best_norm:
+            return [canonical]
+        return [best_fresher, canonical]
+
+    return [canonical]
+
 def generate_candidates(db: Optional[Session] = None) -> List[SearchCandidate]:
+
     """Generates the bounded set of all theoretical search candidates from taxonomy and user searches."""
     taxonomy = get_authoritative_taxonomy()
     candidates = []
@@ -43,7 +76,8 @@ def generate_candidates(db: Optional[Session] = None) -> List[SearchCandidate]:
                 role_canonical=role.canonical,
                 location_canonical=location.canonical,
                 priority=min(role.priority, location.priority), # Stricter/lower number is better
-                tier=location.tier
+                tier=location.tier,
+                variants=_build_bounded_variants(role.canonical, role.aliases)
             ))
 
     # Ad-hoc user queries are no longer injected into the autonomous taxonomy loop
@@ -92,7 +126,8 @@ def resolve_candidate(db: Session, candidate_id: str) -> Optional[SearchCandidat
             role_canonical=role.canonical,
             location_canonical=location.canonical,
             priority=min(role.priority, location.priority),
-            tier=location.tier
+            tier=location.tier,
+            variants=_build_bounded_variants(role.canonical, role.aliases)
         )
 
 
@@ -105,7 +140,8 @@ def _get_history(db: Session, candidate_ids: List[str]) -> Dict[str, dict]:
     stmt = text("""
         SELECT candidate_id,
                MAX(CASE WHEN status = 'succeeded' THEN completed_at ELSE NULL END) as last_success,
-               MAX(selected_at) as last_selected
+               MAX(selected_at) as last_selected,
+               COUNT(CASE WHEN status = 'succeeded' THEN 1 END) as success_count
         FROM search_execution
         WHERE candidate_id = ANY(:cids)
         GROUP BY candidate_id
@@ -115,7 +151,8 @@ def _get_history(db: Session, candidate_ids: List[str]) -> Dict[str, dict]:
     for row in rows:
         history[row[0]] = {
             "last_success": row[1],
-            "last_selected": row[2]
+            "last_selected": row[2],
+            "success_count": row[3] if len(row) > 3 else 0
         }
     return history
 
@@ -197,6 +234,12 @@ def select_next_search(
             # B. Previously failed (attempted, but no success yet)
             score -= 500
         # C. Previously succeeded (but off cooldown) gets no bonus.
+
+        success_count = h.get("success_count", 0)
+        if c.variants:
+            c.query_variant = c.variants[success_count % len(c.variants)]
+        else:
+            c.query_variant = c.role_canonical
 
         eligible.append((score, c))
 

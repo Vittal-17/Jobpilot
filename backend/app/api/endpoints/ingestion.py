@@ -322,7 +322,7 @@ def select_next_search_endpoint(context: CycleContext | None = None, db: Session
             )
             intent = CanonicalSearchIntent(
                 role_id=result.candidate.role_id,
-                keywords=result.candidate.role_canonical,
+                keywords=result.candidate.query_variant or result.candidate.role_canonical,
                 location_id=result.candidate.location_id,
                 location=result.candidate.location_canonical,
                 priority=result.candidate.priority,

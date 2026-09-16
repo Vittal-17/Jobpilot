@@ -1,4 +1,5 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from typing import List
 
 class SearchCandidate(BaseModel):
     candidate_id: str  # Deterministic identifier: "{role_id}::{location_id}"
@@ -8,3 +9,5 @@ class SearchCandidate(BaseModel):
     location_canonical: str
     priority: int
     tier: int
+    query_variant: str = ""
+    variants: List[str] = Field(default_factory=list)
