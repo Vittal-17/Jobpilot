@@ -105,9 +105,14 @@ def internal_execute_search(intent: CanonicalSearchIntent, db: Session = Depends
                 _best_effort_close_routing_claim(db, intent.execution_id, "stale candidate")
                 raise HTTPException(status_code=409, detail="Execution candidate is no longer valid")
 
+            # intent.keywords can be the canonical role or any valid variant
+            expected_keywords = candidate.variants if hasattr(candidate, 'variants') and candidate.variants else [candidate.role_canonical]
+            if intent.keywords not in expected_keywords and intent.keywords != candidate.role_canonical:
+                raise HTTPException(status_code=409, detail="Execution keywords do not match candidate variants")
+
             expected = (
                 candidate.role_id,
-                candidate.role_canonical,
+                intent.keywords, # already validated above
                 candidate.location_id,
                 candidate.location_canonical,
                 candidate.priority,
@@ -138,69 +143,89 @@ def internal_execute_search(intent: CanonicalSearchIntent, db: Session = Depends
         if result.failed > 0:
             raise HTTPException(status_code=502, detail="Provider execution failed")
 
-        if intent.execution_id is not None and job_ids:
-            try:
-                from app.db.models.user_search import UserSearch
-                from app.db.models.user_profile import UserProfile
-                from app.schemas.match import RecommendationPreferences
-                from app.services.matching_service import calculate_match
-                from app.schemas.job import JobResponse
-                from app.db.models.job import JobModel
-                from sqlalchemy.dialects.postgresql import insert
-                from app.db.models.recommendation_history import RecommendationHistoryModel
+        if intent.execution_id is not None:
+            jobs_fresher_eligible = 0
+            recommendations_created = 0
 
-                jobs = db.query(JobModel).filter(JobModel.id.in_(job_ids)).all()
-                active_user_ids = db.query(UserSearch.user_id).filter(UserSearch.enabled == True).distinct().all()
-                active_user_ids = [r[0] for r in active_user_ids]
+            if job_ids:
+                try:
+                    from app.db.models.user_search import UserSearch
+                    from app.db.models.user_profile import UserProfile
+                    from app.schemas.match import RecommendationPreferences
+                    from app.services.matching_service import calculate_match
+                    from app.schemas.job import JobResponse
+                    from app.db.models.job import JobModel
+                    from sqlalchemy.dialects.postgresql import insert
+                    from app.db.models.recommendation_history import RecommendationHistoryModel
+                    from app.services.eligibility import is_fresher_eligible
 
-                if active_user_ids and jobs:
-                    for uid in active_user_ids:
-                        u_profile = db.query(UserProfile).filter(UserProfile.user_id == uid).first()
-                        prefs = RecommendationPreferences(
-                            preferred_roles=u_profile.preferred_roles if u_profile else None,
-                            skills=u_profile.skills if u_profile else None,
-                            preferred_locations=u_profile.preferred_locations if u_profile else None,
-                            remote_preference=u_profile.remote_preference if u_profile else None,
-                            experience_years=u_profile.experience_years if u_profile else None
-                        )
+                    jobs = db.query(JobModel).filter(JobModel.id.in_(job_ids)).all()
 
-                        # Filter out jobs already recommended to this user
-                        existing_recs = db.query(RecommendationHistoryModel.job_id).filter(
-                            RecommendationHistoryModel.user_id == uid,
-                            RecommendationHistoryModel.job_id.in_(job_ids)
-                        ).all()
-                        existing_job_ids = {r[0] for r in existing_recs}
+                    # Calculate fresher eligible count uniquely for THIS execution
+                    for job in jobs:
+                        if is_fresher_eligible(job.title, job.description or ""):
+                            jobs_fresher_eligible += 1
 
-                        scored_jobs = []
-                        for job in jobs:
-                            if job.id in existing_job_ids:
-                                continue
-                            job_resp = JobResponse.model_validate(job)
-                            from app.services.eligibility import is_fresher_eligible
-                            if not is_fresher_eligible(job_resp.title, job_resp.description):
-                                continue
+                    active_user_ids = db.query(UserSearch.user_id).filter(UserSearch.enabled == True).distinct().all()
+                    active_user_ids = [r[0] for r in active_user_ids]
 
-                            match_res = calculate_match(job_resp, prefs)
-                            if match_res.score >= 50:
-                                scored_jobs.append((match_res.score, job.id))
-
-                        # Actually select the best jobs (top 5), not merely a match above a score threshold
-                        scored_jobs.sort(key=lambda x: (-x[0], x[1]))
-                        top_jobs = scored_jobs[:5]
-
-                        for score, job_id in top_jobs:
-                            stmt = insert(RecommendationHistoryModel).values(
-                                user_id=uid,
-                                job_id=job_id
-                            ).on_conflict_do_nothing(
-                                index_elements=['user_id', 'job_id']
+                    if active_user_ids and jobs:
+                        for uid in active_user_ids:
+                            u_profile = db.query(UserProfile).filter(UserProfile.user_id == uid).first()
+                            prefs = RecommendationPreferences(
+                                preferred_roles=u_profile.preferred_roles if u_profile else None,
+                                skills=u_profile.skills if u_profile else None,
+                                preferred_locations=u_profile.preferred_locations if u_profile else None,
+                                remote_preference=u_profile.remote_preference if u_profile else None,
+                                experience_years=u_profile.experience_years if u_profile else None
                             )
-                            db.execute(stmt)
+
+                            # Filter out jobs already recommended to this user
+                            existing_recs = db.query(RecommendationHistoryModel.job_id).filter(
+                                RecommendationHistoryModel.user_id == uid,
+                                RecommendationHistoryModel.job_id.in_(job_ids)
+                            ).all()
+                            existing_job_ids = {r[0] for r in existing_recs}
+
+                            scored_jobs = []
+                            for job in jobs:
+                                if job.id in existing_job_ids:
+                                    continue
+                                job_resp = JobResponse.model_validate(job)
+                                if not is_fresher_eligible(job_resp.title, job_resp.description or ""):
+                                    continue
+
+                                match_res = calculate_match(job_resp, prefs)
+                                if match_res.score >= 50:
+                                    scored_jobs.append((match_res.score, job.id))
+
+                            # Actually select the best jobs (top 5), not merely a match above a score threshold
+                            scored_jobs.sort(key=lambda x: (-x[0], x[1]))
+                            top_jobs = scored_jobs[:5]
+
+                            for score, job_id in top_jobs:
+                                stmt = insert(RecommendationHistoryModel).values(
+                                    user_id=uid,
+                                    job_id=job_id
+                                ).on_conflict_do_nothing(
+                                    index_elements=['user_id', 'job_id']
+                                ).returning(RecommendationHistoryModel.id)
+                                res = db.execute(stmt)
+                                if res.scalar() is not None:
+                                    recommendations_created += 1
+
+                    # Persist execution quality telemetry atomically with recommendations
+                    from sqlalchemy import text
+                    db.execute(text("""
+                        UPDATE search_execution
+                        SET jobs_fresher_eligible = :elig, recommendations_created = :recs
+                        WHERE id = :eid
+                    """), {"elig": jobs_fresher_eligible, "recs": recommendations_created, "eid": intent.execution_id})
                     db.commit()
-            except Exception as e:
-                db.rollback()
-                logger.exception("Failed to process recommendations")
-                raise HTTPException(status_code=500, detail="Failed to process recommendations")
+                except Exception as e:
+                    db.rollback()
+                    logger.exception("Failed to process recommendations and quality telemetry")
+                    raise HTTPException(status_code=500, detail="Failed to process recommendations and telemetry")
 
         return result
     except RateLimitExceeded:
@@ -322,7 +347,7 @@ def select_next_search_endpoint(context: CycleContext | None = None, db: Session
             )
             intent = CanonicalSearchIntent(
                 role_id=result.candidate.role_id,
-                keywords=result.candidate.role_canonical,
+                keywords=result.candidate.query_variant or result.candidate.role_canonical,
                 location_id=result.candidate.location_id,
                 location=result.candidate.location_canonical,
                 priority=result.candidate.priority,

@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timezone, timedelta
 from typing import Callable, Optional, List, Dict
 import logging
@@ -26,7 +27,39 @@ class SelectionResult(BaseModel):
     score: Optional[int] = None
     policy_version: str = "v1"
 
+def _build_bounded_variants(canonical: str, aliases: List[str]) -> List[str]:
+    fresher_pattern = re.compile(r'\b(fresher|junior|jr\.?|entry[- ]level|graduate|trainee)\b', re.IGNORECASE)
+
+    seen_normalized = set()
+    fresher_aliases = []
+
+    for alias in aliases:
+        if fresher_pattern.search(alias):
+            # Normalize: lower case, hyphens to spaces, collapse spaces
+            norm = re.sub(r'[\s\-]+', ' ', alias).strip().lower()
+            if norm not in seen_normalized:
+                seen_normalized.add(norm)
+                fresher_aliases.append(alias)
+
+    if fresher_aliases:
+        def sort_key(a):
+            norm = re.sub(r'[\s\-]+', ' ', a).strip().lower()
+            return (len(norm), norm)
+
+        fresher_aliases.sort(key=sort_key)
+        best_fresher = fresher_aliases[0]
+
+        canon_norm = re.sub(r'[\s\-]+', ' ', canonical).strip().lower()
+        best_norm = re.sub(r'[\s\-]+', ' ', best_fresher).strip().lower()
+
+        if canon_norm == best_norm:
+            return [canonical]
+        return [best_fresher, canonical]
+
+    return [canonical]
+
 def generate_candidates(db: Optional[Session] = None) -> List[SearchCandidate]:
+
     """Generates the bounded set of all theoretical search candidates from taxonomy and user searches."""
     taxonomy = get_authoritative_taxonomy()
     candidates = []
@@ -43,7 +76,8 @@ def generate_candidates(db: Optional[Session] = None) -> List[SearchCandidate]:
                 role_canonical=role.canonical,
                 location_canonical=location.canonical,
                 priority=min(role.priority, location.priority), # Stricter/lower number is better
-                tier=location.tier
+                tier=location.tier,
+                variants=_build_bounded_variants(role.canonical, role.aliases)
             ))
 
     # Ad-hoc user queries are no longer injected into the autonomous taxonomy loop
@@ -92,7 +126,8 @@ def resolve_candidate(db: Session, candidate_id: str) -> Optional[SearchCandidat
             role_canonical=role.canonical,
             location_canonical=location.canonical,
             priority=min(role.priority, location.priority),
-            tier=location.tier
+            tier=location.tier,
+            variants=_build_bounded_variants(role.canonical, role.aliases)
         )
 
 
@@ -105,7 +140,8 @@ def _get_history(db: Session, candidate_ids: List[str]) -> Dict[str, dict]:
     stmt = text("""
         SELECT candidate_id,
                MAX(CASE WHEN status = 'succeeded' THEN completed_at ELSE NULL END) as last_success,
-               MAX(selected_at) as last_selected
+               MAX(selected_at) as last_selected,
+               COUNT(CASE WHEN status = 'succeeded' THEN 1 END) as success_count
         FROM search_execution
         WHERE candidate_id = ANY(:cids)
         GROUP BY candidate_id
@@ -115,9 +151,36 @@ def _get_history(db: Session, candidate_ids: List[str]) -> Dict[str, dict]:
     for row in rows:
         history[row[0]] = {
             "last_success": row[1],
-            "last_selected": row[2]
+            "last_selected": row[2],
+            "success_count": row[3] if len(row) > 3 else 0
         }
     return history
+
+
+def _get_variant_history(db: Session, candidate_ids: List[str]) -> Dict[str, Dict[str, dict]]:
+    if not candidate_ids:
+        return {}
+
+    stmt = text("""
+        SELECT DISTINCT ON (candidate_id, query_variant)
+               candidate_id, query_variant, jobs_fetched, jobs_fresher_eligible, completed_at
+        FROM search_execution
+        WHERE candidate_id = ANY(:cids)
+          AND status = 'succeeded'
+          AND query_variant IS NOT NULL
+        ORDER BY candidate_id, query_variant, completed_at DESC
+    """)
+    rows = db.execute(stmt, {"cids": candidate_ids}).fetchall()
+
+    vh = {cid: {} for cid in candidate_ids}
+    for row in rows:
+        cid, variant, fetched, eligible, comp_at = row
+        vh[cid][variant] = {
+            "fetched": fetched or 0,
+            "eligible": eligible if eligible is not None else -1,
+            "completed_at": comp_at
+        }
+    return vh
 
 def _clean_abandoned_claims(db: Session, reference_time: datetime | None = None) -> int:
     """Fails claims that were selected more than 15 minutes ago but never transitioned to started.
@@ -171,32 +234,63 @@ def select_next_search(
 
     cooldown_success = timedelta(hours=SUCCESS_COOLDOWN_HOURS)
     cooldown_selected = timedelta(minutes=ABANDONED_CLAIM_MINUTES)
+    penalty_duration = timedelta(days=7)
 
-    # 4. Evaluate eligibility and rank
-    eligible = []
+    # 4. Evaluate eligibility
+    pre_eligible = []
     for c in candidates:
         h = history.get(c.candidate_id, {})
         last_success = h.get("last_success")
         last_selected = h.get("last_selected")
 
-        # Freshness Check
         if last_selected and (now - last_selected) < cooldown_selected:
-            continue # Claimed/in-flight
+            continue
         if last_success and (now - last_success) < cooldown_success:
-            continue # Recently searched
+            continue
 
-        # Score calculation (lower is better for ranking)
-        # Priority (1-3) is heavily weighted.
-        # Tier (0-2) is secondary.
+        pre_eligible.append((c, h))
+
+    # Fetch variant histories just for pre_eligible
+    cids_eligible = [c.candidate_id for c, _ in pre_eligible]
+    variant_histories = _get_variant_history(db, cids_eligible)
+
+    eligible = []
+    for c, h in pre_eligible:
         score = (c.priority * 100) + (c.tier * 10)
+        last_selected = h.get("last_selected")
+        last_success = h.get("last_success")
 
         if last_selected is None:
-            # A. Never attempted
             score -= 1000
         elif last_success is None:
-            # B. Previously failed (attempted, but no success yet)
             score -= 500
-        # C. Previously succeeded (but off cooldown) gets no bonus.
+
+        success_count = h.get("success_count", 0)
+
+        if c.variants:
+            v_hist = variant_histories.get(c.candidate_id, {})
+            available = []
+
+            for v in c.variants:
+                vh = v_hist.get(v)
+                if not vh:
+                    available.append(v)
+                    continue
+
+                # Check WEAK/NO-YIELD condition
+                is_weak_or_no_yield = (vh["eligible"] == 0)
+                is_recent = (now - vh["completed_at"]) < penalty_duration
+
+                if is_weak_or_no_yield and is_recent:
+                    continue # Penalized
+                available.append(v)
+
+            if not available:
+                available = c.variants # Fallback: all penalized
+
+            c.query_variant = available[success_count % len(available)]
+        else:
+            c.query_variant = c.role_canonical
 
         eligible.append((score, c))
 
@@ -232,7 +326,8 @@ def select_next_search(
                     candidate_id=candidate.candidate_id,
                     status='selected',
                     selected_at=now,
-                    cycle_id=cycle_id
+                    cycle_id=cycle_id,
+                    query_variant=candidate.query_variant
                 )
                 db.add(claim)
                 db.flush() # Force IntegrityError if concurrent insert
