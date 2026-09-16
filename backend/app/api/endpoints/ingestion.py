@@ -105,9 +105,14 @@ def internal_execute_search(intent: CanonicalSearchIntent, db: Session = Depends
                 _best_effort_close_routing_claim(db, intent.execution_id, "stale candidate")
                 raise HTTPException(status_code=409, detail="Execution candidate is no longer valid")
 
+            # intent.keywords can be the canonical role or any valid variant
+            expected_keywords = candidate.variants if hasattr(candidate, 'variants') and candidate.variants else [candidate.role_canonical]
+            if intent.keywords not in expected_keywords and intent.keywords != candidate.role_canonical:
+                raise HTTPException(status_code=409, detail="Execution keywords do not match candidate variants")
+
             expected = (
                 candidate.role_id,
-                candidate.role_canonical,
+                intent.keywords, # already validated above
                 candidate.location_id,
                 candidate.location_canonical,
                 candidate.priority,
