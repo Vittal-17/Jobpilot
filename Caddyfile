@@ -21,7 +21,7 @@
 	# 2. COMMENT OUT the entire `--- NEW AUTH GATEWAY ---` section (both `@auth_public` and `forward_auth` blocks).
 	# handle {
 	# 	basic_auth {
-	# 		{$CADDY_ADMIN_USER} {$CADDY_ADMIN_HASH_B64}
+	# 		{$CADDY_ADMIN_USER} {$CADDY_ADMIN_HASH}
 	# 	}
 	# 	reverse_proxy n8n:5678
 	# }
