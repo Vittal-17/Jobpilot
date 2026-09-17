@@ -494,3 +494,48 @@ def test_cd_workflow_builds_auth_gateway():
 
     verify_step = next(s for s in steps if s.get("name") == "Verify Image Architecture and SHA")
     assert "jobpilot-auth-gateway" in verify_step["run"], "CD pipeline must verify Auth Gateway image"
+
+def test_forward_auth_strips_websocket_headers():
+    """
+    Regression: n8n editor WebSocket /rest/push returned 403 because
+    Caddy's forward_auth subrequest leaked hop-by-hop WebSocket headers
+    (Connection, Upgrade, Sec-WebSocket-*) into the /verify auth probe.
+
+    This test proves that all required header_up removals exist inside
+    the forward_auth block, and that they are NOT present in the
+    downstream reverse_proxy directive (which must preserve them for n8n).
+    """
+    import re
+
+    with open("Caddyfile", "r") as f:
+        caddyfile = f.read()
+
+    # Extract the forward_auth block content
+    fa_match = re.search(r"forward_auth\s+auth-gateway:8080\s*\{([^}]+)\}", caddyfile)
+    assert fa_match is not None, "forward_auth block must exist in Caddyfile"
+    fa_block = fa_match.group(1)
+
+    required_removals = [
+        "header_up -Connection",
+        "header_up -Upgrade",
+        "header_up -Sec-WebSocket-Key",
+        "header_up -Sec-WebSocket-Version",
+        "header_up -Sec-WebSocket-Protocol",
+        "header_up -Sec-WebSocket-Extensions",
+    ]
+
+    for removal in required_removals:
+        assert removal in fa_block, (
+            f"forward_auth must strip '{removal}' from auth subrequest"
+        )
+
+    # Verify these removals are scoped to forward_auth only —
+    # the downstream reverse_proxy to n8n must NOT strip them.
+    rp_matches = re.findall(r"reverse_proxy\s+n8n:5678", caddyfile)
+    assert len(rp_matches) >= 1, "n8n reverse_proxy must exist"
+    # header_up removals must not appear outside forward_auth
+    outside_fa = caddyfile.replace(fa_match.group(0), "")
+    for removal in required_removals:
+        assert removal not in outside_fa, (
+            f"'{removal}' must only appear inside forward_auth, not in downstream proxy"
+        )
