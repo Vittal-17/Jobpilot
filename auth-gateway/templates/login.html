@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JobPilot Command Center</title>
+    <style>
+        :root {
+            --bg-color: #0a0a0c;
+            --surface: #111116;
+            --border: #22222a;
+            --text-main: #e0e0e0;
+            --text-muted: #888890;
+            --accent: #00f0ff;
+            --accent-glow: rgba(0, 240, 255, 0.15);
+            --error: #ff3366;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            background-image:
+                linear-gradient(rgba(10, 10, 12, 0.95), rgba(10, 10, 12, 0.95)),
+                linear-gradient(var(--border) 1px, transparent 1px),
+                linear-gradient(90deg, var(--border) 1px, transparent 1px);
+            background-size: 100% 100%, 40px 40px, 40px 40px;
+            background-position: center;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 380px;
+            padding: 40px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            position: relative;
+            box-sizing: border-box;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.5);
+            animation: fadeIn 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+            opacity: 0;
+            transform: translateY(10px);
+        }
+
+        .container::before {
+            content: '';
+            position: absolute;
+            top: -1px;
+            left: 0;
+            width: 40px;
+            height: 1px;
+            background: var(--accent);
+            box-shadow: 0 0 10px var(--accent);
+        }
+
+        @keyframes fadeIn {
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .header {
+            margin-bottom: 40px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        .header h1 {
+            font-size: 14px;
+            font-weight: normal;
+            color: var(--text-muted);
+            margin: 0 0 8px 0;
+            display: flex;
+            align-items: center;
+        }
+
+        .header h1::before {
+            content: 'SYS.AUTH';
+            color: var(--accent);
+            margin-right: 12px;
+            font-size: 10px;
+            padding: 2px 6px;
+            background: var(--accent-glow);
+            border: 1px solid rgba(0, 240, 255, 0.3);
+        }
+
+        .header h2 {
+            font-size: 24px;
+            font-weight: 400;
+            margin: 0;
+            color: #fff;
+        }
+
+        .form-group {
+            margin-bottom: 24px;
+            position: relative;
+        }
+
+        label {
+            display: block;
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        input[type="text"],
+        input[type="password"] {
+            width: 100%;
+            padding: 12px 16px;
+            background: rgba(0, 0, 0, 0.2);
+            border: 1px solid var(--border);
+            color: #fff;
+            font-family: inherit;
+            font-size: 14px;
+            box-sizing: border-box;
+            transition: all 0.3s ease;
+            outline: none;
+        }
+
+        input:focus {
+            border-color: rgba(0, 240, 255, 0.5);
+            background: rgba(0, 240, 255, 0.02);
+            box-shadow: 0 0 0 1px rgba(0, 240, 255, 0.2);
+        }
+
+        .pwd-toggle {
+            position: absolute;
+            right: 12px;
+            top: 34px;
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 10px;
+            text-transform: uppercase;
+        }
+
+        .pwd-toggle:hover {
+            color: var(--text-main);
+        }
+
+        .error-msg {
+            color: var(--error);
+            font-size: 12px;
+            margin-bottom: 24px;
+            padding: 12px;
+            background: rgba(255, 51, 102, 0.1);
+            border-left: 2px solid var(--error);
+            display: {% if error %}block{% else %}none{% endif %};
+        }
+
+        button[type="submit"] {
+            width: 100%;
+            padding: 14px;
+            background: transparent;
+            border: 1px solid var(--accent);
+            color: var(--accent);
+            font-family: inherit;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        button[type="submit"]:hover {
+            background: var(--accent-glow);
+            box-shadow: 0 0 15px var(--accent-glow);
+        }
+
+        button[type="submit"]:active {
+            transform: scale(0.98);
+        }
+
+        button[type="submit"].loading {
+            color: transparent;
+        }
+
+        button[type="submit"].loading::after {
+            content: '';
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            width: 16px;
+            height: 16px;
+            margin: -8px 0 0 -8px;
+            border: 2px solid var(--accent);
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .status-bar {
+            margin-top: 30px;
+            padding-top: 15px;
+            border-top: 1px solid var(--border);
+            font-size: 10px;
+            color: var(--text-muted);
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .status-dot {
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            background: var(--accent);
+            border-radius: 50%;
+            margin-right: 6px;
+            box-shadow: 0 0 5px var(--accent);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.4; }
+            100% { opacity: 1; }
+        }
+
+        @media (max-width: 480px) {
+            .container {
+                border-left: none;
+                border-right: none;
+                border-bottom: none;
+                padding: 30px 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Control Plane</h1>
+            <h2>JobPilot</h2>
+        </div>
+
+        <div class="error-msg" id="errorMsg">{{ error }}</div>
+
+        <form method="POST" action="/login" id="loginForm">
+            <input type="hidden" name="rd" value="{{ rd }}">
+
+            <div class="form-group">
+                <label for="username">Operator ID</label>
+                <input type="text" id="username" name="username" required autocomplete="username" spellcheck="false" autofocus>
+            </div>
+
+            <div class="form-group">
+                <label for="password">Access Token</label>
+                <input type="password" id="password" name="password" required autocomplete="current-password">
+                <button type="button" class="pwd-toggle" id="pwdToggle">SHOW</button>
+            </div>
+
+            <button type="submit" id="submitBtn">Initialize Session</button>
+        </form>
+
+        <div class="status-bar">
+            <span><span class="status-dot"></span>SECURE LINK</span>
+            <span>V2.0.4</span>
+        </div>
+    </div>
+
+    <script>
+        const pwdInput = document.getElementById('password');
+        const pwdToggle = document.getElementById('pwdToggle');
+        const form = document.getElementById('loginForm');
+        const submitBtn = document.getElementById('submitBtn');
+
+        pwdToggle.addEventListener('click', () => {
+            if (pwdInput.type === 'password') {
+                pwdInput.type = 'text';
+                pwdToggle.textContent = 'HIDE';
+            } else {
+                pwdInput.type = 'password';
+                pwdToggle.textContent = 'SHOW';
+            }
+        });
+
+        form.addEventListener('submit', () => {
+            submitBtn.classList.add('loading');
+        });
+    </script>
+</body>
+</html>

@@ -67,7 +67,12 @@ def test_notifications_workflow_contract():
     ack = nodes["Acknowledge Delivery"]
     assert ack["parameters"]["url"].endswith("/ingestion/internal/notifications/acknowledge")
     assert "delivery_id" in ack["parameters"]["jsonBody"]
-    assert "$execution.id" in ack["parameters"]["jsonBody"]
+    assert "$execution.id" not in ack["parameters"]["jsonBody"], "Acknowledge must not use execution ID"
+    assert "Claim Notifications" in ack["parameters"]["jsonBody"], "Acknowledge must reference claim output"
+
+    verify_ack = nodes["Verify Acknowledgement"]
+    assert verify_ack["type"] == "n8n-nodes-base.code"
+    assert "acknowledged" in verify_ack["parameters"]["jsCode"]
 
     check_empty = nodes["Check If Empty"]
 
@@ -107,6 +112,7 @@ def test_notifications_workflow_contract():
     assert len(connections["Check If Empty"]["main"][1]) == 0  # false path stops
     assert connections["Format Payload"]["main"][0][0]["node"] == "Send Telegram"
     assert connections["Send Telegram"]["main"][0][0]["node"] == "Acknowledge Delivery"
+    assert connections["Acknowledge Delivery"]["main"][0][0]["node"] == "Verify Acknowledgement"
 
 def test_notifications_workflow_escaping():
     import subprocess
@@ -202,6 +208,10 @@ def test_telegram_node_contract():
     t_conn = connections.get("Send Telegram", {}).get("main", [])
     assert any(c.get("node") == "Acknowledge Delivery" for c in t_conn[0]), "Send Telegram must connect to Acknowledge Delivery"
 
+    # Acknowledge Delivery -> Verify Acknowledgement
+    ack_conn = connections.get("Acknowledge Delivery", {}).get("main", [])
+    assert any(c.get("node") == "Verify Acknowledgement" for c in ack_conn[0]), "Acknowledge Delivery must connect to Verify Acknowledgement"
+
 def test_notifications_workflow_condition_evaluation():
     import subprocess
     import tempfile
@@ -242,5 +252,43 @@ def test_notifications_workflow_condition_evaluation():
         output = json.loads(result.stdout)
         assert output["empty"] is False, "Condition must evaluate to FALSE for 0 recommendations"
         assert output["one"] is True, "Condition must evaluate to TRUE for >0 recommendations"
+    finally:
+        Path(temp_path).unlink()
+
+def test_notifications_workflow_acknowledgement_guard():
+    import json, subprocess, tempfile
+    from pathlib import Path
+    workflows = json.loads(Path("backend/JP___Notifications.json").read_text(encoding="utf-8"))
+    workflow = workflows[0]
+    nodes = {node["name"]: node for node in workflow["nodes"]}
+    js_code = nodes["Verify Acknowledgement"]["parameters"]["jsCode"]
+    wrapper = f'''
+    function testAck(isAck) {{
+        const $input = {{
+            first: () => ({{
+                json: {{ acknowledged: isAck }}
+            }}),
+            all: () => [{{ json: {{ acknowledged: isAck }} }}]
+        }};
+        try {{
+            const run = new Function('$input', `
+                {js_code}
+            `);
+            run($input);
+            return "SUCCESS";
+        }} catch(e) {{
+            return "ERROR";
+        }}
+    }}
+    console.log(testAck(true) + "," + testAck(false));
+    '''
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.js', delete=False) as f:
+        f.write(wrapper)
+        temp_path = f.name
+
+    try:
+        result = subprocess.run(["node", temp_path], capture_output=True, text=True, check=True)
+        out = result.stdout.strip()
+        assert out == "SUCCESS,ERROR", "Must succeed on true and fail on false"
     finally:
         Path(temp_path).unlink()

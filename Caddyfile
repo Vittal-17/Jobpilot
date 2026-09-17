@@ -15,10 +15,32 @@
 		reverse_proxy n8n:5678
 	}
 
+	# --- ROLLBACK BASIC AUTH ---
+	# To rollback to Caddy's native basic auth:
+	# 1. UNCOMMENT the `handle` block below.
+	# 2. COMMENT OUT the entire `--- NEW AUTH GATEWAY ---` section (both `@auth_public` and `forward_auth` blocks).
+	# handle {
+	# 	basic_auth {
+	# 		{$CADDY_ADMIN_USER} {$CADDY_ADMIN_HASH}
+	# 	}
+	# 	reverse_proxy n8n:5678
+	# }
+	# ---------------------------
+
+	# --- NEW AUTH GATEWAY ---
+	@auth_public {
+		path /login /logout /static/*
+	}
+	handle @auth_public {
+		reverse_proxy auth-gateway:8080
+	}
+
 	handle {
-		basic_auth {
-			{$CADDY_ADMIN_USER} {$CADDY_ADMIN_HASH}
+		forward_auth auth-gateway:8080 {
+			uri /verify
+			copy_headers X-User
 		}
 		reverse_proxy n8n:5678
 	}
+	# ------------------------
 }

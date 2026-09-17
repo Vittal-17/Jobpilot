@@ -85,19 +85,15 @@ services:
       - DB_POSTGRESDB_DATABASE=${N8N_DB_NAME:-n8n_data}
       - DB_POSTGRESDB_USER=${N8N_DB_USER:-n8n_user}
       - DB_POSTGRESDB_PASSWORD=${N8N_DB_PASSWORD?N8N_DB_PASSWORD must be set}
-      # Security & Exposure
       - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
       - N8N_PORT=5678
       - N8N_LISTEN_ADDRESS=0.0.0.0
       - N8N_WEBHOOK_URL=http://localhost:5678/
-      # Timezone configuration for India (operator timezone)
       - GENERIC_TIMEZONE=Asia/Kolkata
       - TZ=Asia/Kolkata
-      # Warning Mitigations (Explicit Intent)
       - N8N_RUNNERS_TASK_TIMEOUT=30
       - N8N_COMPRESSION_NODE_MAX_DECOMPRESSED_SIZE_BYTES=104857600
       - N8N_COMPRESSION_NODE_MAX_ZIP_ENTRIES=1000
-      # Execution History / Retention (Keep VPS disk usage small)
       - EXECUTIONS_DATA_PRUNE=true
       - EXECUTIONS_DATA_MAX_AGE=168
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
@@ -111,6 +107,16 @@ services:
         condition: service_healthy
       db-setup:
         condition: service_completed_successfully
+
+  auth-gateway:
+    build: ./auth-gateway
+    restart: always
+    environment:
+      - CADDY_ADMIN_USER=${CADDY_ADMIN_USER}
+      - CADDY_ADMIN_HASH_B64=${CADDY_ADMIN_HASH_B64:?CADDY_ADMIN_HASH_B64 must be set}
+      - AUTH_SECRET_KEY=${AUTH_SECRET_KEY?AUTH_SECRET_KEY must be set}
+    ports:
+      - "127.0.0.1:8080:8080"
 
 volumes:
   postgres_data:
