@@ -53,6 +53,19 @@ jobs:
             APP_COMMIT_SHA=${{ github.event.workflow_run.head_sha }}
             BUILD_TIMESTAMP=${{ github.event.workflow_run.created_at }}
 
+      - name: Build and push Auth Gateway image
+        id: build_push_auth
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ./auth-gateway
+          file: ./auth-gateway/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: ghcr.io/${{ steps.repo_owner.outputs.owner }}/jobpilot-auth-gateway:${{ github.event.workflow_run.head_sha }}
+          build-args: |
+            APP_COMMIT_SHA=${{ github.event.workflow_run.head_sha }}
+
+
       - name: Verify Image Architecture and SHA
         run: |
           set -euo pipefail
@@ -103,6 +116,25 @@ jobs:
           fi
 
           echo "Digest verification passed: $PULLED_DIGEST"
+
+          echo "Pulling published Auth Gateway image..."
+          AUTH_IMAGE_REF="ghcr.io/${{ steps.repo_owner.outputs.owner }}/jobpilot-auth-gateway:${{ github.event.workflow_run.head_sha }}"
+          docker pull "$AUTH_IMAGE_REF"
+
+          echo "Verifying Auth Gateway architecture..."
+          AUTH_ARCH=$(docker inspect "$AUTH_IMAGE_REF" --format '{{.Architecture}}')
+          if [ "$AUTH_ARCH" != "arm64" ]; then
+            echo "Error: Auth Gateway image architecture is $AUTH_ARCH, expected arm64"
+            exit 1
+          fi
+
+          echo "Verifying Auth Gateway exact commit SHA in environment..."
+          AUTH_SHA_ENV=$(docker inspect "$AUTH_IMAGE_REF" --format '{{range .Config.Env}}{{println .}}{{end}}' | awk -F= '$1=="APP_COMMIT_SHA" {print $2}')
+          if [ "$AUTH_SHA_ENV" != "${{ github.event.workflow_run.head_sha }}" ]; then
+            echo "Error: Auth Gateway APP_COMMIT_SHA is $AUTH_SHA_ENV, expected ${{ github.event.workflow_run.head_sha }}"
+            exit 1
+          fi
+
           echo "Image verification passed."
 
   deploy-to-production:
