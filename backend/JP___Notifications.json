@@ -128,7 +128,7 @@
           "nodeCredentialType": "httpHeaderAuth",
           "sendBody": true,
           "specifyBody": "json",
-          "jsonBody": "={ \"user_id\": 1, \"delivery_id\": \"{{ $execution.id }}\" }"
+          "jsonBody": "={ \"user_id\": {{ $('Claim Notifications').item.json.user_id }}, \"delivery_id\": \"{{ $('Claim Notifications').item.json.delivery_id }}\" }"
         },
         "id": "node-acknowledge",
         "name": "Acknowledge Delivery",
@@ -147,6 +147,19 @@
         "retryOnFail": true,
         "maxTries": 3,
         "waitBetweenTries": 2000
+      },
+      {
+        "parameters": {
+          "jsCode": "if ($input.first().json.acknowledged !== true) {\n  throw new Error(\"Acknowledgement semantically failed: acknowledged=false\");\n}\nreturn $input.all();"
+        },
+        "id": "node-verify-ack",
+        "name": "Verify Acknowledgement",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1300,
+          200
+        ]
       }
     ],
     "connections": {
@@ -200,6 +213,17 @@
           [
             {
               "node": "Acknowledge Delivery",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Acknowledge Delivery": {
+        "main": [
+          [
+            {
+              "node": "Verify Acknowledgement",
               "type": "main",
               "index": 0
             }
