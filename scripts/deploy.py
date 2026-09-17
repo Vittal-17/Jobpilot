@@ -170,7 +170,7 @@ def validate_secrets(config: dict):
     log("Validating production configuration values...")
     required_keys = [
         "API_SECRET_KEY", "POSTGRES_PASSWORD", "N8N_DB_PASSWORD",
-        "N8N_ENCRYPTION_KEY", "CADDY_ADMIN_HASH", "CADDY_ADMIN_USER",
+        "N8N_ENCRYPTION_KEY", "CADDY_ADMIN_HASH", "CADDY_ADMIN_HASH_B64", "AUTH_SECRET_KEY", "CADDY_ADMIN_USER",
         "DOMAIN", "ACME_EMAIL", "POSTGRES_DB", "POSTGRES_USER",
         "N8N_DB_NAME", "N8N_DB_USER"
     ]

@@ -456,3 +456,41 @@ def test_deploy_py_canonical_image_usage():
     # Check .env path
     assert 'def load_production_env(filepath="/opt/jobpilot/shared/.env") -> dict:' in content
     assert 'env_file = "/opt/jobpilot/shared/.env"' in content
+
+def test_auth_gateway_production_configuration():
+    import yaml
+    with open("docker-compose.production.yml", "r") as f:
+        compose = yaml.safe_load(f)
+
+    auth = compose["services"].get("auth-gateway")
+    assert auth is not None, "auth-gateway service must exist in production"
+    assert auth.get("restart") == "unless-stopped"
+
+    networks = auth.get("networks", [])
+    assert "frontend" in networks, "auth-gateway must be on frontend network for Caddy to reach it"
+
+    env = auth.get("environment", [])
+    if isinstance(env, dict):
+        env = [f"{k}={v}" for k, v in env.items()]
+
+    assert any(e.startswith("CADDY_ADMIN_USER=") for e in env), "Must have CADDY_ADMIN_USER"
+    assert any(e.startswith("CADDY_ADMIN_HASH_B64=") for e in env), "Must have CADDY_ADMIN_HASH_B64"
+    assert any(e.startswith("AUTH_SECRET_KEY=") for e in env), "Must have AUTH_SECRET_KEY"
+
+def test_cd_workflow_builds_auth_gateway():
+    import yaml
+    with open(".github/workflows/cd.yml", "r") as f:
+        cd = yaml.safe_load(f)
+
+    build_job = cd["jobs"]["build-and-publish"]
+    steps = build_job["steps"]
+
+    auth_build_step = next((s for s in steps if s.get("name") == "Build and push Auth Gateway image"), None)
+    assert auth_build_step is not None, "CD pipeline must build and push Auth Gateway image"
+
+    assert auth_build_step["uses"].startswith("docker/build-push-action")
+    assert auth_build_step["with"]["context"] == "./auth-gateway"
+    assert "jobpilot-auth-gateway" in auth_build_step["with"]["tags"]
+
+    verify_step = next(s for s in steps if s.get("name") == "Verify Image Architecture and SHA")
+    assert "jobpilot-auth-gateway" in verify_step["run"], "CD pipeline must verify Auth Gateway image"

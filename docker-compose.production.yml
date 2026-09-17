@@ -25,6 +25,18 @@ volumes:
     name: jobpilot_caddy_config
 
 services:
+  auth-gateway:
+    build:
+      context: ./auth-gateway
+    image: ghcr.io/vittal-17/jobpilot-auth-gateway:${APP_COMMIT_SHA:?APP_COMMIT_SHA must be set to an exact Git SHA}
+    restart: unless-stopped
+    environment:
+      - CADDY_ADMIN_USER=${CADDY_ADMIN_USER:?CADDY_ADMIN_USER must be set}
+      - CADDY_ADMIN_HASH_B64=${CADDY_ADMIN_HASH_B64:?CADDY_ADMIN_HASH_B64 must be set}
+      - AUTH_SECRET_KEY=${AUTH_SECRET_KEY:?AUTH_SECRET_KEY must be set}
+    networks:
+      - frontend
+    logging: *default-logging
   caddy:
     image: caddy:2.8-alpine
     restart: unless-stopped
