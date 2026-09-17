@@ -438,6 +438,8 @@ def test_placeholder_credential_rejection():
         "N8N_DB_PASSWORD": "valid",
         "N8N_ENCRYPTION_KEY": "valid",
         "CADDY_ADMIN_HASH": "valid",
+        "CADDY_ADMIN_HASH_B64": "valid",
+        "AUTH_SECRET_KEY": "valid",
         "CADDY_ADMIN_USER": "valid",
         "DOMAIN": "jobpilot.example.com",
         "ACME_EMAIL": "test@example.com",
