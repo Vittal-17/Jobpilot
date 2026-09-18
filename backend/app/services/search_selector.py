@@ -27,30 +27,32 @@ class SelectionResult(BaseModel):
     score: Optional[int] = None
     policy_version: str = "v1"
 
-def _build_bounded_variants(canonical: str, aliases: List[str]) -> List[str]:
-    fresher_pattern = re.compile(r'\b(fresher|junior|jr\.?|entry[- ]level|graduate|trainee)\b', re.IGNORECASE)
+# Compile regexes once at module level for performance
+FRESHER_PATTERN = re.compile(r'\b(fresher|junior|jr\.?|entry[- ]level|graduate|trainee)\b', re.IGNORECASE)
+NORMALIZE_SPACES_PATTERN = re.compile(r'[\s\-]+')
 
+def _build_bounded_variants(canonical: str, aliases: List[str]) -> List[str]:
     seen_normalized = set()
     fresher_aliases = []
 
     for alias in aliases:
-        if fresher_pattern.search(alias):
+        if FRESHER_PATTERN.search(alias):
             # Normalize: lower case, hyphens to spaces, collapse spaces
-            norm = re.sub(r'[\s\-]+', ' ', alias).strip().lower()
+            norm = NORMALIZE_SPACES_PATTERN.sub(' ', alias).strip().lower()
             if norm not in seen_normalized:
                 seen_normalized.add(norm)
                 fresher_aliases.append(alias)
 
     if fresher_aliases:
         def sort_key(a):
-            norm = re.sub(r'[\s\-]+', ' ', a).strip().lower()
+            norm = NORMALIZE_SPACES_PATTERN.sub(' ', a).strip().lower()
             return (len(norm), norm)
 
         fresher_aliases.sort(key=sort_key)
         best_fresher = fresher_aliases[0]
 
-        canon_norm = re.sub(r'[\s\-]+', ' ', canonical).strip().lower()
-        best_norm = re.sub(r'[\s\-]+', ' ', best_fresher).strip().lower()
+        canon_norm = NORMALIZE_SPACES_PATTERN.sub(' ', canonical).strip().lower()
+        best_norm = NORMALIZE_SPACES_PATTERN.sub(' ', best_fresher).strip().lower()
 
         if canon_norm == best_norm:
             return [canonical]
