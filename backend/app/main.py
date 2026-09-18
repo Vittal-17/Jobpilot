@@ -1,5 +1,5 @@
 from app.api.endpoints.ingestion import verify_api_key
-from fastapi import Depends
+from fastapi import Depends, Request
 
 from fastapi import FastAPI
 from app.api.endpoints import ingestion, auth, users, profile, jobs, saved_jobs, applications, searches
@@ -19,6 +19,16 @@ app.include_router(saved_jobs.router, prefix="/v1/saved", tags=["saved_jobs"])
 app.include_router(applications.router, prefix="/v1/applications", tags=["applications"])
 app.include_router(searches.router, prefix="/v1/searches", tags=["searches"])
 
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    # Allow FastAPI docs assets to load correctly from jsdelivr and inline scripts
+    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; img-src 'self' data: https://fastapi.tiangolo.com;"
+    return response
 
 @app.get("/health")
 def health_check() -> dict[str, str]:
