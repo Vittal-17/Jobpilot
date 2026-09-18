@@ -126,7 +126,7 @@
             outline: none;
         }
 
-        input:focus {
+        input:focus, input:focus-visible {
             border-color: rgba(0, 240, 255, 0.5);
             background: rgba(0, 240, 255, 0.02);
             box-shadow: 0 0 0 1px rgba(0, 240, 255, 0.2);
@@ -143,9 +143,16 @@
             font-family: inherit;
             font-size: 10px;
             text-transform: uppercase;
+            padding: 4px;
         }
 
         .pwd-toggle:hover {
+            color: var(--text-main);
+        }
+
+        .pwd-toggle:focus-visible {
+            outline: 1px solid var(--accent);
+            outline-offset: 2px;
             color: var(--text-main);
         }
 
@@ -175,13 +182,23 @@
             overflow: hidden;
         }
 
-        button[type="submit"]:hover {
+        button[type="submit"]:hover:not(:disabled) {
             background: var(--accent-glow);
             box-shadow: 0 0 15px var(--accent-glow);
         }
 
-        button[type="submit"]:active {
+        button[type="submit"]:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+        }
+
+        button[type="submit"]:active:not(:disabled) {
             transform: scale(0.98);
+        }
+
+        button[type="submit"]:disabled {
+            opacity: 0.7;
+            cursor: not-allowed;
         }
 
         button[type="submit"].loading {
@@ -250,7 +267,7 @@
             <h2>JobPilot</h2>
         </div>
 
-        <div class="error-msg" id="errorMsg">{{ error }}</div>
+        <div class="error-msg" id="errorMsg" role="alert" aria-live="assertive">{{ error }}</div>
 
         <form method="POST" action="/login" id="loginForm">
             <input type="hidden" name="rd" value="{{ rd }}">
@@ -263,7 +280,7 @@
             <div class="form-group">
                 <label for="password">Access Token</label>
                 <input type="password" id="password" name="password" required autocomplete="current-password">
-                <button type="button" class="pwd-toggle" id="pwdToggle">SHOW</button>
+                <button type="button" class="pwd-toggle" id="pwdToggle" aria-label="Show password" aria-pressed="false">SHOW</button>
             </div>
 
             <button type="submit" id="submitBtn">Initialize Session</button>
@@ -285,14 +302,20 @@
             if (pwdInput.type === 'password') {
                 pwdInput.type = 'text';
                 pwdToggle.textContent = 'HIDE';
+                pwdToggle.setAttribute('aria-label', 'Hide password');
+                pwdToggle.setAttribute('aria-pressed', 'true');
             } else {
                 pwdInput.type = 'password';
                 pwdToggle.textContent = 'SHOW';
+                pwdToggle.setAttribute('aria-label', 'Show password');
+                pwdToggle.setAttribute('aria-pressed', 'false');
             }
         });
 
         form.addEventListener('submit', () => {
             submitBtn.classList.add('loading');
+            submitBtn.disabled = true;
+            submitBtn.setAttribute('aria-busy', 'true');
         });
     </script>
 </body>
