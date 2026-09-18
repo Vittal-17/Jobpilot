@@ -29,7 +29,7 @@
 
 	# --- NEW AUTH GATEWAY ---
 	@auth_public {
-		path /login /logout /static/*
+		path /login /logout
 	}
 	handle @auth_public {
 		reverse_proxy auth-gateway:8080
