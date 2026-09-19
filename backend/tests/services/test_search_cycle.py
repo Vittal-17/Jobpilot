@@ -50,6 +50,8 @@ def test_cycle_race_exactly_one_claim(monkeypatch):
                 before_claim=hook,
                 cycle_id=cycle_id
             )
+            if result.action == "execute":
+                session.commit()
             return result
         finally:
             session.close()
@@ -108,6 +110,8 @@ def test_cycle_budget_exhaustion(monkeypatch):
                 before_claim=hook,
                 cycle_id=cycle_id
             )
+            if result.action == "execute":
+                session.commit()
             return result
         finally:
             session.close()
@@ -160,6 +164,8 @@ def test_different_cycles_independent(monkeypatch):
                 before_claim=hook,
                 cycle_id=cid
             )
+            if result.action == "execute":
+                session.commit()
             return result
         finally:
             session.close()
@@ -192,6 +198,7 @@ def test_n8n_continue_on_fail_contract(monkeypatch):
     cand2 = SearchCandidate(candidate_id=f"MOCK::2-{uuid.uuid4()}", role_id="MOCK", location_id="2", role_canonical="M", location_canonical="2", priority=1, tier=0)
     
     monkeypatch.setattr("app.services.search_selector.generate_candidates", lambda db=None: [cand1, cand2])
+    monkeypatch.setattr("app.services.search_selector.resolve_candidate", lambda db, cid: cand1 if cid == cand1.candidate_id else cand2)
     monkeypatch.setattr("app.services.provider_router.route_provider", lambda db: ProviderSelectionResult(provider=ProviderName.ADZUNA, reason="test", policy_version="v1"))
     
     # Loop iteration 1
@@ -210,7 +217,7 @@ def test_n8n_continue_on_fail_contract(monkeypatch):
         from sqlalchemy import text
         db.execute(text("UPDATE search_execution SET status='failed' WHERE id=:id"), {"id": execution_id})
         db.commit()
-        return IngestionResult(provider=ProviderName.ADZUNA, fetched=0, created=0, duplicates=0, invalid=0, failed=1)
+        return IngestionResult(provider=ProviderName.ADZUNA, fetched=0, created=0, duplicates=0, invalid=0, failed=1), []
     monkeypatch.setattr("app.api.endpoints.ingestion.run_ingestion", mock_run_ingestion)
     
     res_exec = client.post("/ingestion/internal/search", json=intent, headers={"x-api-key": api_key})

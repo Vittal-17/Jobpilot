@@ -10,4 +10,5 @@ class SearchCandidate(BaseModel):
     priority: int
     tier: int
     query_variant: str = ""
+    retrieval_location: str | None = None
     variants: List[str] = Field(default_factory=list)

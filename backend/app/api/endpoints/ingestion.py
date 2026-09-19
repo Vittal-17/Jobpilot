@@ -82,11 +82,48 @@ def ingest_jooble(query: JobSearchQuery, db: Session = Depends(get_db)):
 
 from app.schemas.job_search import CanonicalSearchIntent
 
+def _resolve_authoritative_execution_context(
+    claim,
+    candidate,
+) -> tuple[str, str]:
+    """
+    Derives authoritative (expected_keywords, expected_location) strictly from the persisted claim.
+
+    Invariants:
+    1. Query Variant: If claim.query_variant is a non-empty string, it is the sole authority.
+       Canonical role fallback is permitted ONLY when claim.query_variant is NULL or empty (legacy claim).
+    2. Retrieval Location: If claim.retrieval_location is a non-empty string, it is the sole authority.
+       Canonical location fallback is permitted ONLY when claim.retrieval_location is NULL or empty.
+    """
+    if (
+        claim.query_variant is not None
+        and isinstance(claim.query_variant, str)
+        and claim.query_variant.strip()
+    ):
+        expected_keywords = claim.query_variant.strip()
+    else:
+        expected_keywords = candidate.role_canonical
+
+    if (
+        claim.retrieval_location is not None
+        and isinstance(claim.retrieval_location, str)
+        and claim.retrieval_location.strip()
+    ):
+        expected_location = claim.retrieval_location.strip()
+    else:
+        expected_location = candidate.location_canonical
+
+    return expected_keywords, expected_location
+
+
 @router.post("/internal/search", response_model=IngestionResult, dependencies=[Depends(verify_api_key)])
 def internal_execute_search(intent: CanonicalSearchIntent, db: Session = Depends(get_db)):
     from app.providers.exceptions import ProviderConfigurationError
     try:
         selected_provider = intent.provider
+        expected_keywords = intent.keywords
+        expected_location = intent.location
+
         if intent.execution_id is not None:
             from app.db.models.search_execution import SearchExecutionModel
             claim = db.query(SearchExecutionModel).filter(SearchExecutionModel.id == intent.execution_id).first()
@@ -105,16 +142,18 @@ def internal_execute_search(intent: CanonicalSearchIntent, db: Session = Depends
                 _best_effort_close_routing_claim(db, intent.execution_id, "stale candidate")
                 raise HTTPException(status_code=409, detail="Execution candidate is no longer valid")
 
-            # intent.keywords can be the canonical role or any valid variant
-            expected_keywords = candidate.variants if hasattr(candidate, 'variants') and candidate.variants else [candidate.role_canonical]
-            if intent.keywords not in expected_keywords and intent.keywords != candidate.role_canonical:
-                raise HTTPException(status_code=409, detail="Execution keywords do not match candidate variants")
+            expected_keywords, expected_location = _resolve_authoritative_execution_context(claim, candidate)
+
+            if intent.keywords != expected_keywords:
+                raise HTTPException(status_code=409, detail="Execution keywords do not match claimed variant")
+            if intent.location != expected_location:
+                raise HTTPException(status_code=409, detail="Execution location does not match claimed retrieval location")
 
             expected = (
                 candidate.role_id,
-                intent.keywords, # already validated above
+                expected_keywords,
                 candidate.location_id,
-                candidate.location_canonical,
+                expected_location,
                 candidate.priority,
             )
             supplied = (
@@ -132,8 +171,8 @@ def internal_execute_search(intent: CanonicalSearchIntent, db: Session = Depends
 
         provider = create_provider(selected_provider)
         query = JobSearchQuery(
-            keywords=intent.keywords,
-            location=intent.location,
+            keywords=expected_keywords,
+            location=expected_location,
             radius_km=None,
             page=1,
             page_size=20,
@@ -349,7 +388,7 @@ def select_next_search_endpoint(context: CycleContext | None = None, db: Session
                 role_id=result.candidate.role_id,
                 keywords=result.candidate.query_variant or result.candidate.role_canonical,
                 location_id=result.candidate.location_id,
-                location=result.candidate.location_canonical,
+                location=result.candidate.retrieval_location or result.candidate.location_canonical,
                 priority=result.candidate.priority,
                 execution_id=result.execution_id,
                 provider=provider_decision.provider,

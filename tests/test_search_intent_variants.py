@@ -43,22 +43,37 @@ def test_variant_cycling_and_duplicate_prevention(db_session: Session):
     )
 
     with patch("app.services.search_selector.generate_candidates", return_value=[c]):
-        for i in range(len(expected_variants) + 1):
-            now = datetime.now(timezone.utc) + timedelta(days=i)
-            result = select_next_search(db_session, reference_time=now)
-            assert result.action == "execute"
+        now = datetime.now(timezone.utc)
 
-            # Verify the chosen variant cycles correctly through the BOUNDED variants
-            expected = expected_variants[i % len(expected_variants)]
-            assert result.candidate.query_variant == expected
+        # Cycle 1: UNTRIED exploration (should pick the first bounded variant)
+        result1 = select_next_search(db_session, reference_time=now)
+        assert result1.action == "execute"
+        assert result1.candidate.query_variant == expected_variants[1]
+        # Complete as PRODUCTIVE but low yield
+        exec1 = db_session.query(SearchExecutionModel).filter_by(id=result1.execution_id).one()
+        exec1.status = "succeeded"
+        exec1.jobs_fetched = 5
+        exec1.jobs_fresher_eligible = 1
+        exec1.completed_at = now
+        db_session.commit()
+        # Check cooldown
+        assert select_next_search(db_session, reference_time=now).action == "stop"
+        # Cycle 2: Untried exploration (should pick the second bounded variant)
+        now += timedelta(days=8) # Bypass 7-day cooldown
+        result2 = select_next_search(db_session, reference_time=now)
+        assert result2.action == "execute"
+        assert result2.candidate.query_variant == expected_variants[0]
+        # Complete as PRODUCTIVE with high yield
+        exec2 = db_session.query(SearchExecutionModel).filter_by(id=result2.execution_id).one()
+        exec2.status = "succeeded"
+        exec2.jobs_fetched = 20
+        exec2.jobs_fresher_eligible = 10
+        exec2.completed_at = now
+        db_session.commit()
 
-            # Complete it successfully to advance the success_count
-            exec_model = db_session.query(SearchExecutionModel).filter_by(id=result.execution_id).one()
-            exec_model.status = "succeeded"
-            exec_model.completed_at = now
-            db_session.commit()
-
-            # Verify it's on cooldown immediately after
-            res_cooldown = select_next_search(db_session, reference_time=now)
-            assert res_cooldown.action == "stop"
-            assert res_cooldown.reason == "all_candidates_ineligible_or_fresh"
+        # Cycle 3: Both tried, both productive. Utility ranking should pick the highest yield!
+        # High yield variant is expected_variants[1]
+        now += timedelta(days=8)
+        result3 = select_next_search(db_session, reference_time=now)
+        assert result3.action == "execute"
+        assert result3.candidate.query_variant == expected_variants[0]

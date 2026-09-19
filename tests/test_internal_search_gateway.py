@@ -13,7 +13,7 @@ from app.main import app
 client = TestClient(app)
 
 
-def _setup_mocked_gateway(monkeypatch, db_session, candidate_id: str):
+def _setup_mocked_gateway(monkeypatch, db_session, candidate_id: str, query_variant: str | None = None):
     """Sets up the DB claim and overrides the dependencies for the gateway test."""
     app.dependency_overrides[get_db] = lambda: db_session
 
@@ -21,6 +21,7 @@ def _setup_mocked_gateway(monkeypatch, db_session, candidate_id: str):
         candidate_id=candidate_id,
         status="selected",
         provider_name="adzuna",
+        query_variant=query_variant,
         selected_at=datetime.now(timezone.utc),
     )
     db_session.add(claim)
@@ -28,6 +29,7 @@ def _setup_mocked_gateway(monkeypatch, db_session, candidate_id: str):
 
     # Mock run_ingestion so we don't actually hit the external provider
     mock_run = MagicMock()
+    mock_run.return_value = (MagicMock(provider="adzuna", failed=0), [])
     monkeypatch.setattr("app.api.endpoints.ingestion.run_ingestion", mock_run)
 
     return claim
@@ -56,7 +58,7 @@ def test_gateway_canonical_keywords_pass(db_session, monkeypatch):
 
 
 def test_gateway_valid_fresher_variant_passes(db_session, monkeypatch):
-    claim = _setup_mocked_gateway(monkeypatch, db_session, "ROLE-DA-002::LOC-BLR-001")
+    claim = _setup_mocked_gateway(monkeypatch, db_session, "ROLE-DA-002::LOC-BLR-001", query_variant="Junior Data Engineer")
     try:
         intent = {
             "role_id": "ROLE-DA-002",
@@ -78,7 +80,7 @@ def test_gateway_valid_fresher_variant_passes(db_session, monkeypatch):
 
 
 def test_gateway_unrelated_keyword_fails(db_session, monkeypatch):
-    claim = _setup_mocked_gateway(monkeypatch, db_session, "ROLE-DA-002::LOC-BLR-001")
+    claim = _setup_mocked_gateway(monkeypatch, db_session, "ROLE-DA-002::LOC-BLR-001", query_variant="Data Engineer")
     try:
         intent = {
             "role_id": "ROLE-DA-002",
@@ -95,13 +97,13 @@ def test_gateway_unrelated_keyword_fails(db_session, monkeypatch):
             json=intent,
         )
         assert res.status_code == 409
-        assert "Execution keywords do not match candidate variants" in res.json()["detail"]
+        assert "Execution keywords do not match claimed variant" in res.json()["detail"]
     finally:
         app.dependency_overrides.clear()
 
 
 def test_gateway_foreign_variant_fails(db_session, monkeypatch):
-    claim = _setup_mocked_gateway(monkeypatch, db_session, "ROLE-DA-002::LOC-BLR-001")
+    claim = _setup_mocked_gateway(monkeypatch, db_session, "ROLE-DA-002::LOC-BLR-001", query_variant="Data Engineer")
     try:
         intent = {
             "role_id": "ROLE-DA-002",
@@ -118,7 +120,7 @@ def test_gateway_foreign_variant_fails(db_session, monkeypatch):
             json=intent,
         )
         assert res.status_code == 409
-        assert "Execution keywords do not match candidate variants" in res.json()["detail"]
+        assert "Execution keywords do not match claimed variant" in res.json()["detail"]
     finally:
         app.dependency_overrides.clear()
 

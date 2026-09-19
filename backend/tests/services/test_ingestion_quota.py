@@ -3,13 +3,36 @@ from unittest.mock import MagicMock, call
 from app.services.ingestion import acquire_provider_request_slot
 from app.services.ingestion import DatabaseUnavailable
 
+@pytest.fixture(autouse=True)
+def mock_quota_session(monkeypatch):
+    """
+    Mocks the independently created quota Session context manager in acquire_provider_request_slot.
+    Preserves production transaction isolation while allowing unit tests to verify operations
+    on the isolated session.
+    """
+    class MockSessionContext:
+        def __init__(self, bind=None):
+            self.session = bind
+
+        def __enter__(self):
+            return self.session
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            if exc_type:
+                self.session.rollback()
+            return False
+
+    monkeypatch.setattr("app.services.ingestion.Session", MockSessionContext)
+
+
 def get_db_mock(scalar_returns):
     db_mock = MagicMock()
-    # Create a mock for the result of execute
     result_mock = MagicMock()
     result_mock.scalar.side_effect = scalar_returns
     db_mock.execute.return_value = result_mock
+    db_mock.get_bind.return_value = db_mock
     return db_mock
+
 
 def test_acquire_provider_request_slot_success():
     # A. Successful reservation
@@ -75,6 +98,7 @@ def test_provider_with_no_minute_limit():
 def test_acquire_provider_request_slot_db_failure():
     # G. Database failure
     db_mock = MagicMock()
+    db_mock.get_bind.return_value = db_mock
     db_mock.execute.side_effect = Exception("DB Error")
     with pytest.raises(DatabaseUnavailable):
         acquire_provider_request_slot(db_mock, "adzuna")

@@ -23,6 +23,8 @@ def test_select_next_success(mock_select, mock_route):
     app.dependency_overrides[get_db] = lambda: db
     mock_result = MagicMock()
     mock_result.candidate.role_id = "ROLE-1"
+    mock_result.candidate.query_variant = "q"
+    mock_result.candidate.retrieval_location = None
     mock_result.candidate.role_canonical = "Dev"
     mock_result.candidate.location_id = "LOC-1"
     mock_result.candidate.location_canonical = "City"
@@ -112,6 +114,7 @@ def test_select_next_routing_failures_are_explicit_and_close_claim(
     }
     result = MagicMock()
     result.candidate = MagicMock()
+    result.policy_version = "v1"
     result.execution_id = 99
     mock_select.return_value = result
     mock_route.side_effect = errors[routing_error]
@@ -125,8 +128,13 @@ def test_select_next_routing_failures_are_explicit_and_close_claim(
     finally:
         app.dependency_overrides.clear()
 
-    assert response.status_code == expected_status
-    assert response.json()["detail"] == expected_detail
+    if routing_error == "quota":
+        assert response.status_code == 200
+        assert response.json()["action"] == "stop"
+        assert response.json()["reason"] == "daily_provider_budget_exhausted"
+    else:
+        assert response.status_code == expected_status
+        assert response.json()["detail"] == expected_detail
     assert db.commit.called
     update_sql = " ".join(str(db.execute.call_args.args[0]).split())
     assert "status = 'failed'" in update_sql
@@ -141,6 +149,7 @@ def test_routing_db_failure_does_not_leak_cleanup_failure(mock_select, mock_rout
 
     result = MagicMock()
     result.candidate = MagicMock()
+    result.policy_version = "v1"
     result.execution_id = 99
     mock_select.return_value = result
     mock_route.side_effect = ProviderRoutingUnavailable("secret database detail")
@@ -157,3 +166,90 @@ def test_routing_db_failure_does_not_leak_cleanup_failure(mock_select, mock_rout
 
     assert response.status_code == 503
     assert response.json() == {"detail": "Provider routing temporarily unavailable"}
+
+@patch("app.services.provider_router.route_provider")
+@patch("app.services.search_selector.select_next_search")
+def test_dispatch_intent_prefers_retrieval_location_over_canonical(mock_select, mock_route):
+    from app.providers.types import ProviderName
+    from app.services.provider_router import ProviderSelectionResult
+    from app.db.database import get_db
+
+    db = MagicMock()
+    db.execute.return_value.scalar_one.return_value = 1
+    app.dependency_overrides[get_db] = lambda: db
+    mock_result = MagicMock()
+    mock_result.candidate.role_id = "ROLE-1"
+    mock_result.candidate.query_variant = "query variant"
+    mock_result.candidate.role_canonical = "Role Canon"
+    mock_result.candidate.location_id = "LOC-BLR-002"
+    mock_result.candidate.location_canonical = "Whitefield"
+    mock_result.candidate.retrieval_location = "Bengaluru"  # Explicitly set
+    mock_result.candidate.priority = 1
+    mock_result.candidate.candidate_id = "ROLE-1::LOC-BLR-002"
+    mock_result.reason = "highest_ranked_eligible"
+    mock_result.score = 50
+    mock_result.execution_id = 99
+    mock_result.policy_version = "v1"
+
+    mock_select.return_value = mock_result
+    mock_route.return_value = ProviderSelectionResult(
+        provider=ProviderName.ADZUNA,
+        reason="provider_priority",
+    )
+
+    try:
+        response = client.post(
+            "/ingestion/internal/select-next",
+            headers={"x-api-key": settings.api_secret_key}
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    intent = response.json()["intent"]
+    assert intent["location"] == "Bengaluru", "Must use retrieval_location when present"
+    assert intent["role_id"] == "ROLE-1", "Role ID must be preserved"
+    assert intent["location_id"] == "LOC-BLR-002", "Location ID must be preserved"
+    assert intent["keywords"] == "query variant", "Query variant must be preserved"
+
+@patch("app.services.provider_router.route_provider")
+@patch("app.services.search_selector.select_next_search")
+def test_dispatch_intent_falls_back_to_location_canonical_when_no_retrieval_location(mock_select, mock_route):
+    from app.providers.types import ProviderName
+    from app.services.provider_router import ProviderSelectionResult
+    from app.db.database import get_db
+
+    db = MagicMock()
+    db.execute.return_value.scalar_one.return_value = 1
+    app.dependency_overrides[get_db] = lambda: db
+    mock_result = MagicMock()
+    mock_result.candidate.role_id = "ROLE-1"
+    mock_result.candidate.query_variant = "query variant"
+    mock_result.candidate.location_id = "LOC-BLR-002"
+    mock_result.candidate.location_canonical = "Whitefield"
+    mock_result.candidate.retrieval_location = None  # No fallback
+    mock_result.candidate.priority = 1
+    mock_result.candidate.candidate_id = "ROLE-1::LOC-BLR-002"
+    mock_result.reason = "highest_ranked_eligible"
+    mock_result.score = 50
+    mock_result.execution_id = 99
+    mock_result.policy_version = "v1"
+
+    mock_select.return_value = mock_result
+    mock_route.return_value = ProviderSelectionResult(
+        provider=ProviderName.ADZUNA,
+        reason="provider_priority",
+    )
+
+    try:
+        response = client.post(
+            "/ingestion/internal/select-next",
+            headers={"x-api-key": settings.api_secret_key}
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    intent = response.json()["intent"]
+    assert intent["location"] == "Whitefield", "Must fall back to location_canonical"
+    assert intent["location_id"] == "LOC-BLR-002", "Location ID must be preserved"
