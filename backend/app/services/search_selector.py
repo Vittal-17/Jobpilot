@@ -306,6 +306,34 @@ def select_next_search(
 
         pre_eligible.append((c, h))
 
+    # 4.5. Evaluate active user demand
+    demand_roles = set()
+    demand_locations = set()
+    try:
+        from app.db.models.user_search import UserSearch
+        from app.db.models.user_profile import UserProfile
+        from app.db.models.user import User
+
+        active_searches = db.query(UserSearch).filter(UserSearch.enabled == True).all()
+        for us in active_searches:
+            if us.query:
+                demand_roles.add(us.query.strip().lower())
+            if us.location:
+                demand_locations.add(us.location.strip().lower())
+
+        active_profiles = db.query(UserProfile).join(User).filter(User.is_active == True).all()
+        for p in active_profiles:
+            if p.preferred_roles:
+                for r in p.preferred_roles.split(","):
+                    if r.strip():
+                        demand_roles.add(r.strip().lower())
+            if p.preferred_locations:
+                for loc in p.preferred_locations.split(","):
+                    if loc.strip():
+                        demand_locations.add(loc.strip().lower())
+    except Exception:
+        logger.exception("Failed to load demand signals")
+
     # Fetch variant histories just for pre_eligible
     cids_eligible = [c.candidate_id for c, _ in pre_eligible]
     variant_histories = _get_variant_history(db, cids_eligible)
@@ -438,18 +466,47 @@ def select_next_search(
         else:
             c.query_variant = c.role_canonical
 
-        eligible.append((score, c))
+        # Apply demand priority
+        role_demanded = False
+        if demand_roles:
+            c_roles = [c.role_canonical.lower()]
+            if c.variants:
+                c_roles.extend(v.lower() for v in c.variants)
+            for dr in demand_roles:
+                for cr in c_roles:
+                    if dr in cr or cr in dr:
+                        role_demanded = True
+                        break
+                if role_demanded:
+                    break
+
+        location_demanded = False
+        if demand_locations:
+            c_loc = c.location_canonical.lower()
+            for dl in demand_locations:
+                if dl in c_loc or c_loc in dl:
+                    location_demanded = True
+                    break
+
+        # Explicit demand-ranking dimension (0: High, 1: Partial, 2: Normal)
+        demand_tier = 2
+        if role_demanded and location_demanded:
+            demand_tier = 0
+        elif role_demanded or location_demanded:
+            demand_tier = 1
+
+        eligible.append(((demand_tier, score), c))
 
     if not eligible:
         return SelectionResult(action="stop", candidate=None, reason="all_candidates_ineligible_or_fresh")
 
-    # Sort by score ascending, then by deterministic candidate ID
-    eligible.sort(key=lambda x: (x[0], x[1].candidate_id))
+    # Sort by demand_tier ascending, then score ascending, then by deterministic candidate ID
+    eligible.sort(key=lambda x: (x[0][0], x[0][1], x[1].candidate_id))
 
     # 5. Concurrency-safe claim mechanism
     from app.core.config import settings
 
-    for score, candidate in eligible:
+    for (demand_tier, score), candidate in eligible:
         if before_claim:
             before_claim(candidate)
         try:

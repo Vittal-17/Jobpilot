@@ -12,7 +12,7 @@ from app.core.config import settings
 def mock_env(monkeypatch):
     monkeypatch.setattr(settings, "adzuna_app_id", "test_id")
     monkeypatch.setattr(settings, "adzuna_app_key", "test_key")
-    monkeypatch.setattr(settings, "jooble_api_key", "test_jooble")
+    monkeypatch.setattr(settings, "jooble_in_api_key", "test_jooble")
 
 @respx.mock
 def test_adzuna_success():
@@ -62,7 +62,7 @@ def test_jooble_success():
         ]
     }
 
-    respx.post("https://jooble.org/api/test_jooble").mock(return_value=httpx.Response(200, json=mock_resp))
+    respx.post("https://in.jooble.org/api/test_jooble").mock(return_value=httpx.Response(200, json=mock_resp))
 
     jobs = provider.search_jobs(query)
     assert len(jobs) == 1

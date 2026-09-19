@@ -113,14 +113,14 @@ def test_security_negative_tests():
     with open("docker-compose.production.yml", "r") as f:
         content = f.read()
 
-    # Provider secret VALUES must not be committed. Variable references like ${JOOBLE_API_KEY} are allowed.
+    # Provider secret VALUES must not be committed. Variable references like ${JOOBLE_IN_API_KEY} are allowed.
     assert "your_adzuna_app_key" not in content
     assert "CHANGE_ME" not in content
     assert "test_key" not in content
-    assert "your_jooble_api_key" not in content
+    assert "your_jooble_in_api_key" not in content
 
     # Check that secrets are parameterized
-    assert "${JOOBLE_API_KEY" in content
+    assert "${JOOBLE_IN_API_KEY" in content
     assert "${ADZUNA_APP_KEY" in content
     assert "${API_SECRET_KEY" in content
     assert "${POSTGRES_PASSWORD" in content

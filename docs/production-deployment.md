@@ -107,7 +107,7 @@ Because process variables override the `.env` file, CI/CD runners can safely inj
 - `POSTGRES_PASSWORD`, `N8N_DB_PASSWORD`
 - `API_SECRET_KEY` (FastAPI <-> n8n trust)
 - `N8N_ENCRYPTION_KEY` (Must be high-entropy, secures n8n credentials)
-- Provider keys (`ADZUNA_APP_ID`, `JOOBLE_API_KEY`)
+- Provider keys (`ADZUNA_APP_ID`, `JOOBLE_IN_API_KEY`)
 
 **Configuration:**
 - `ENVIRONMENT=production`
