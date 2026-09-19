@@ -44,6 +44,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install --no-deps -r backend/requirements-dev.lock
 
+      - name: Run Database Migrations
+        env:
+          API_SECRET_KEY: test-ci-secret-key-minimum-16
+          DATABASE_URL: postgresql+psycopg://jobpilot:jobpilot_pass@localhost:5432/jobpilot
+          PYTHONPATH: backend
+        run: alembic -c backend/alembic.ini upgrade head
+
       - name: Run Pytest
         env:
           API_SECRET_KEY: test-ci-secret-key-minimum-16
