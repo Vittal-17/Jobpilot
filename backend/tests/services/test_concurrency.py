@@ -43,6 +43,8 @@ def test_real_postgres_same_candidate_claim_contention(monkeypatch):
                 before_claim=lambda _: barrier.wait(timeout=10),
             )
             session.execute(select(func.count()).select_from(SearchExecutionModel)).scalar_one()
+            if result.action == "execute":
+                session.commit()
             return result
         finally:
             session.close()

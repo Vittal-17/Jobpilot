@@ -716,10 +716,12 @@ class TestAdaptiveRetrievalScope:
         with patch("app.services.search_selector.generate_candidates", return_value=[candidate]):
             with patch("app.services.search_selector._get_history", return_value={}):
                 with patch("app.services.search_selector._get_variant_history") as mock_vh:
+                    # v_null has NULL completed_at and recent selected_at (2 hours ago, < 1 day)
+                    # -> treated as active UNKNOWN (is_penalized = True)
                     mock_vh.return_value = {
                         candidate.candidate_id: {
-                            "v_good": {"fetched": 10, "eligible": 10, "completed_at": now - timedelta(days=10), "id": 11},
-                            "v_null": {"fetched": 100, "eligible": 100, "completed_at": None, "id": 12},
+                            "v_good": {"fetched": 10, "eligible": 10, "completed_at": now - timedelta(days=10), "selected_at": now - timedelta(days=10), "id": 11},
+                            "v_null": {"fetched": 100, "eligible": 100, "completed_at": None, "selected_at": now - timedelta(hours=2), "id": 12},
                         }
                     }
                     db_mock = MagicMock()
@@ -729,6 +731,114 @@ class TestAdaptiveRetrievalScope:
                         from app.services.search_selector import select_next_search
                         result = select_next_search(db_mock, reference_time=now)
                         assert result.candidate.query_variant == "v_good"
+
+    @patch("app.services.search_selector._clean_abandoned_claims")
+    def test_null_completed_at_with_expired_selection_reenters_explore_queue(self, mock_clean):
+        """
+        Proves that an execution with NULL completed_at but selected_at > 1 day ago
+        has its UNKNOWN penalty expired and re-enters the explore queue, preventing
+        permanent re-penalization.
+        """
+        now = datetime.now(timezone.utc)
+        candidate = self._make_candidate(variants=["v_good", "v_null_expired"])
+        with patch("app.services.search_selector.generate_candidates", return_value=[candidate]):
+            with patch("app.services.search_selector._get_history", return_value={}):
+                with patch("app.services.search_selector._get_variant_history") as mock_vh:
+                    mock_vh.return_value = {
+                        candidate.candidate_id: {
+                            "v_good": {"fetched": 10, "eligible": 10, "completed_at": now - timedelta(days=10), "selected_at": now - timedelta(days=10), "id": 11},
+                            # selected 25 hours ago (> 1 day): penalty expired, enters explore_queue
+                            "v_null_expired": {"fetched": 100, "eligible": 100, "completed_at": None, "selected_at": now - timedelta(hours=25), "id": 12},
+                        }
+                    }
+                    db_mock = MagicMock()
+                    db_mock.begin_nested.return_value.__enter__ = MagicMock()
+                    db_mock.begin_nested.return_value.__exit__ = MagicMock()
+                    with patch("app.services.search_selector.SearchExecutionModel", return_value=MagicMock()):
+                        from app.services.search_selector import select_next_search
+                        result = select_next_search(db_mock, reference_time=now)
+                        # explore_queue has priority over utility ranking (v_good)
+                        assert result.candidate.query_variant == "v_null_expired"
+
+    @patch("app.services.search_selector._clean_abandoned_claims")
+    def test_indeterminate_timestamp_safe_fallback(self, mock_clean):
+        """
+        Proves that an execution with completely missing timestamps (completed_at=None,
+        started_at=None, selected_at=None) safely falls back to age_days=inf and is
+        not trapped in an infinite fresh-failure loop.
+        """
+        now = datetime.now(timezone.utc)
+        candidate = self._make_candidate(variants=["v_good", "v_indeterminate"])
+        with patch("app.services.search_selector.generate_candidates", return_value=[candidate]):
+            with patch("app.services.search_selector._get_history", return_value={}):
+                with patch("app.services.search_selector._get_variant_history") as mock_vh:
+                    mock_vh.return_value = {
+                        candidate.candidate_id: {
+                            "v_good": {"fetched": 10, "eligible": 10, "completed_at": now - timedelta(days=10), "selected_at": now - timedelta(days=10), "id": 11},
+                            "v_indeterminate": {"fetched": 100, "eligible": 100, "completed_at": None, "started_at": None, "selected_at": None, "id": 12},
+                        }
+                    }
+                    db_mock = MagicMock()
+                    db_mock.begin_nested.return_value.__enter__ = MagicMock()
+                    db_mock.begin_nested.return_value.__exit__ = MagicMock()
+                    with patch("app.services.search_selector.SearchExecutionModel", return_value=MagicMock()):
+                        from app.services.search_selector import select_next_search
+                        result = select_next_search(db_mock, reference_time=now)
+                        assert result.candidate.query_variant == "v_indeterminate"
+
+    @patch("app.services.search_selector._clean_abandoned_claims")
+    def test_broadening_blocked_when_variant_is_unknown(self, mock_clean):
+        """
+        Proves fail-closed broadening safety: a candidate with a mix of NO_INVENTORY
+        and UNKNOWN telemetry cannot broaden, because drought is not verified across all variants.
+        """
+        now = datetime.now(timezone.utc)
+        candidate = self._make_candidate(cid="ROLE-X::LOC-BLR-002", loc_id="LOC-BLR-002", variants=["v_no_inv", "v_unknown"])
+        with patch("app.services.search_selector.generate_candidates", return_value=[candidate]):
+            with patch("app.services.search_selector._get_history", return_value={}):
+                with patch("app.services.search_selector._get_variant_history") as mock_vh:
+                    mock_vh.return_value = {
+                        candidate.candidate_id: {
+                            "v_no_inv": {"fetched": 0, "eligible": None, "completed_at": now - timedelta(hours=2), "selected_at": now - timedelta(hours=2), "id": 10},
+                            "v_unknown": {"fetched": None, "eligible": None, "completed_at": now - timedelta(hours=2), "selected_at": now - timedelta(hours=2), "id": 20},
+                        }
+                    }
+                    db_mock = MagicMock()
+                    db_mock.begin_nested.return_value.__enter__ = MagicMock()
+                    db_mock.begin_nested.return_value.__exit__ = MagicMock()
+                    with patch("app.services.search_selector.SearchExecutionModel", return_value=MagicMock()):
+                        from app.services.search_selector import select_next_search
+                        result = select_next_search(db_mock, reference_time=now)
+                        assert result.action == "execute"
+                        # Broadening MUST be blocked because v_unknown does not verify inventory drought
+                        assert result.candidate.retrieval_location is None
+
+    @patch("app.services.search_selector._clean_abandoned_claims")
+    def test_broadening_allowed_when_all_variants_verified_no_inventory(self, mock_clean):
+        """
+        Proves that broadening is permitted when ALL bounded variants have verified NO_INVENTORY.
+        """
+        now = datetime.now(timezone.utc)
+        candidate = self._make_candidate(cid="ROLE-X::LOC-BLR-002", loc_id="LOC-BLR-002", variants=["v_no_inv_1", "v_no_inv_2"])
+        with patch("app.services.search_selector.generate_candidates", return_value=[candidate]):
+            with patch("app.services.search_selector._get_history", return_value={}):
+                with patch("app.services.search_selector._get_variant_history") as mock_vh:
+                    mock_vh.return_value = {
+                        candidate.candidate_id: {
+                            "v_no_inv_1": {"fetched": 0, "eligible": None, "completed_at": now - timedelta(hours=2), "selected_at": now - timedelta(hours=2), "id": 10},
+                            "v_no_inv_2": {"fetched": 0, "eligible": None, "completed_at": now - timedelta(hours=3), "selected_at": now - timedelta(hours=3), "id": 20},
+                        }
+                    }
+                    db_mock = MagicMock()
+                    db_mock.begin_nested.return_value.__enter__ = MagicMock()
+                    db_mock.begin_nested.return_value.__exit__ = MagicMock()
+                    with patch("app.services.search_selector.SearchExecutionModel", return_value=MagicMock()):
+                        from app.services.search_selector import select_next_search
+                        result = select_next_search(db_mock, reference_time=now)
+                        assert result.action == "execute"
+                        # Both variants verified NO_INVENTORY -> broadening permitted
+                        assert result.candidate.retrieval_location == "Bengaluru"
+
 
     @patch("app.services.search_selector._clean_abandoned_claims")
     def test_impossible_fresher_count_treated_as_unknown(self, mock_clean):

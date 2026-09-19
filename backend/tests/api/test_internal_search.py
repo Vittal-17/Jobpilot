@@ -220,3 +220,126 @@ def test_internal_search_quota_exceeded(mock_run_ingestion):
     })
     assert response.status_code == 429
     assert response.json()["detail"] == "Provider request quota exceeded"
+
+
+@patch("app.api.endpoints.ingestion.run_ingestion")
+def test_internal_search_end_to_end_adaptive_retrieval_location(mock_run_ingestion):
+    """
+    Proves that when /select-next emits a broadened retrieval_location (e.g. 'Bengaluru' for LOC-BLR-002),
+    /internal/search accepts that exact retrieval_location, derives it from the claim, and passes it to provider.
+    """
+    claim = MagicMock(
+        id=101,
+        candidate_id="ROLE-PY-001::LOC-BLR-002",
+        status="selected",
+        provider_name="adzuna",
+        query_variant="Junior Python Developer",
+        retrieval_location="Bengaluru",
+    )
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = claim
+    app.dependency_overrides[get_db] = lambda: db
+    mock_run_ingestion.return_value = (IngestionResult(provider="adzuna"), [])
+
+    try:
+        response = client.post(
+            "/ingestion/internal/search",
+            headers={"X-Api-Key": settings.api_secret_key},
+            json={
+                "role_id": "ROLE-PY-001",
+                "keywords": "Junior Python Developer",
+                "location_id": "LOC-BLR-002",
+                "location": "Bengaluru",
+                "priority": 1,
+                "execution_id": 101,
+                "provider": "adzuna",
+            },
+        )
+        assert response.status_code == 200
+        mock_run_ingestion.assert_called_once()
+        passed_query = mock_run_ingestion.call_args.args[3]
+        assert passed_query.location == "Bengaluru"
+        assert passed_query.keywords == "Junior Python Developer"
+    finally:
+        app.dependency_overrides.clear()
+
+
+@patch("app.api.endpoints.ingestion.run_ingestion")
+def test_internal_search_rejects_different_variant_than_claimed(mock_run_ingestion):
+    """
+    Proves that an execution claimed as Variant A ('Junior Python Developer') strictly rejects
+    Variant B ('Python Developer') even when Variant B is a valid bounded variant for the candidate.
+    Guarantees telemetry cannot be contaminated across variants.
+    """
+    claim = MagicMock(
+        id=102,
+        candidate_id="ROLE-PY-001::LOC-BLR-001",
+        status="selected",
+        provider_name="adzuna",
+        query_variant="Junior Python Developer",
+        retrieval_location=None,
+    )
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = claim
+    app.dependency_overrides[get_db] = lambda: db
+
+    try:
+        response = client.post(
+            "/ingestion/internal/search",
+            headers={"X-Api-Key": settings.api_secret_key},
+            json={
+                "role_id": "ROLE-PY-001",
+                "keywords": "Python Developer",  # Valid bounded variant, but not the claimed variant!
+                "location_id": "LOC-BLR-001",
+                "location": "Bengaluru",
+                "priority": 1,
+                "execution_id": 102,
+                "provider": "adzuna",
+            },
+        )
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Execution keywords do not match claimed variant"
+        mock_run_ingestion.assert_not_called()
+    finally:
+        app.dependency_overrides.clear()
+
+
+@patch("app.api.endpoints.ingestion.run_ingestion")
+def test_internal_search_supports_legacy_null_query_variant(mock_run_ingestion):
+    """
+    Proves backwards compatibility for legacy execution claims where query_variant is NULL:
+    accepts candidate canonical role without weakening exact variant validation for new claims.
+    """
+    claim = MagicMock(
+        id=103,
+        candidate_id="ROLE-PY-001::LOC-BLR-001",
+        status="selected",
+        provider_name="adzuna",
+        query_variant=None,  # Legacy claim with NULL query_variant
+        retrieval_location=None,
+    )
+    db = MagicMock()
+    db.query.return_value.filter.return_value.first.return_value = claim
+    app.dependency_overrides[get_db] = lambda: db
+    mock_run_ingestion.return_value = (IngestionResult(provider="adzuna"), [])
+
+    try:
+        response = client.post(
+            "/ingestion/internal/search",
+            headers={"X-Api-Key": settings.api_secret_key},
+            json={
+                "role_id": "ROLE-PY-001",
+                "keywords": "Python Developer",  # Candidate canonical role
+                "location_id": "LOC-BLR-001",
+                "location": "Bengaluru",
+                "priority": 1,
+                "execution_id": 103,
+                "provider": "adzuna",
+            },
+        )
+        assert response.status_code == 200
+        mock_run_ingestion.assert_called_once()
+        passed_query = mock_run_ingestion.call_args.args[3]
+        assert passed_query.keywords == "Python Developer"
+    finally:
+        app.dependency_overrides.clear()

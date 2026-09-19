@@ -128,8 +128,13 @@ def test_select_next_routing_failures_are_explicit_and_close_claim(
     finally:
         app.dependency_overrides.clear()
 
-    assert response.status_code == expected_status
-    assert response.json()["detail"] == expected_detail
+    if routing_error == "quota":
+        assert response.status_code == 200
+        assert response.json()["action"] == "stop"
+        assert response.json()["reason"] == "daily_provider_budget_exhausted"
+    else:
+        assert response.status_code == expected_status
+        assert response.json()["detail"] == expected_detail
     assert db.commit.called
     update_sql = " ".join(str(db.execute.call_args.args[0]).split())
     assert "status = 'failed'" in update_sql

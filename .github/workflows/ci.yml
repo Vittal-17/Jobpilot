@@ -47,6 +47,7 @@ jobs:
       - name: Run Pytest
         env:
           API_SECRET_KEY: test-ci-secret-key-minimum-16
+          DATABASE_URL: postgresql+psycopg://jobpilot:jobpilot_pass@localhost:5432/jobpilot
           TEST_DATABASE_URL: postgresql+psycopg://jobpilot:jobpilot_pass@localhost:5432/jobpilot_test
           PYTHONPATH: backend
-        run: pytest tests/ -q
+        run: pytest tests/ backend/tests/ -q

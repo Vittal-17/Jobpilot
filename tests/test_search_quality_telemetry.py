@@ -343,3 +343,92 @@ def test_unknown_telemetry_1_day_penalty(db_session, monkeypatch):
     res2 = select_next_search(db_session, reference_time=later)
     assert res2.candidate is not None
     assert res2.candidate.query_variant == "Unknown Variant"
+
+
+def test_select_next_to_internal_search_adaptive_location_end_to_end(db_session, monkeypatch):
+    """
+    Full cross-endpoint integration test:
+    1. A granular Bengaluru candidate (LOC-BLR-002) has all bounded variants with verified NO_INVENTORY.
+    2. /internal/select-next is called -> candidate is selected with retrieval_location='Bengaluru'.
+    3. The returned intent payload is passed directly to /internal/search.
+    4. /internal/search succeeds with 200 (no 409 conflict between canonical and retrieval location),
+       and provider search receives location='Bengaluru'.
+    """
+    from fastapi.testclient import TestClient
+    from unittest.mock import MagicMock
+    from app.main import app
+    from app.core.config import settings
+    from app.services.provider_router import ProviderSelectionResult
+    from app.providers.types import ProviderName
+    from app.domain.candidate import SearchCandidate
+    from app.schemas.job_search import IngestionResult
+
+    client = TestClient(app)
+    api_key = settings.api_secret_key
+
+    # Setup candidate on LOC-BLR-002 with two bounded variants
+    candidate = SearchCandidate(
+        candidate_id="ROLE-PY-001::LOC-BLR-002",
+        role_id="ROLE-PY-001",
+        location_id="LOC-BLR-002",
+        role_canonical="Python Developer",
+        location_canonical="Whitefield, Bengaluru",
+        priority=1,
+        tier=1,
+        variants=["Junior Python Developer", "Python Developer"]
+    )
+    monkeypatch.setattr("app.services.search_selector.generate_candidates", lambda db=None: [candidate])
+    monkeypatch.setattr(
+        "app.services.provider_router.route_provider",
+        lambda db: ProviderSelectionResult(provider=ProviderName.ADZUNA, reason="test", policy_version="v1")
+    )
+
+    now = datetime.now(timezone.utc)
+    # Insert verified NO_INVENTORY history for all variants
+    for var_name in candidate.variants:
+        db_session.add(SearchExecutionModel(
+            candidate_id=candidate.candidate_id,
+            status="failed",
+            query_variant=var_name,
+            jobs_fetched=0,
+            jobs_fresher_eligible=None,
+            selected_at=now - timedelta(hours=3),
+            completed_at=now - timedelta(hours=2)
+        ))
+    db_session.commit()
+
+    from app.db.database import get_db
+    app.dependency_overrides[get_db] = lambda: db_session
+
+    try:
+        # 1. Call /internal/select-next
+        resp_select = client.post(
+            "/ingestion/internal/select-next",
+            headers={"x-api-key": api_key},
+            json={"cycle_id": "test-adaptive-cycle"}
+        )
+        assert resp_select.status_code == 200
+        select_data = resp_select.json()
+        assert select_data["action"] == "execute"
+        intent = select_data["intent"]
+        # Verify adaptive broadening occurred on selector side
+        assert intent["location"] == "Bengaluru"
+        assert intent["execution_id"] is not None
+
+        # Mock provider run_ingestion
+        mock_run_ingestion = MagicMock(return_value=(IngestionResult(provider="adzuna", fetched=0), []))
+        monkeypatch.setattr("app.api.endpoints.ingestion.run_ingestion", mock_run_ingestion)
+
+        # 2. Call /internal/search with the exact intent returned from /internal/select-next
+        resp_search = client.post(
+            "/ingestion/internal/search",
+            headers={"x-api-key": api_key},
+            json=intent
+        )
+        assert resp_search.status_code == 200, f"Expected 200 but got {resp_search.status_code}: {resp_search.text}"
+        mock_run_ingestion.assert_called_once()
+        passed_query = mock_run_ingestion.call_args.args[3]
+        # Verify provider received the server-authoritative retrieval location
+        assert passed_query.location == "Bengaluru"
+    finally:
+        app.dependency_overrides.clear()

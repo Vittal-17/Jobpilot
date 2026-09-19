@@ -157,13 +157,62 @@ def _get_history(db: Session, candidate_ids: List[str]) -> Dict[str, dict]:
     return history
 
 
+def _resolve_effective_execution_timestamp(vh: dict, now: datetime) -> tuple[Optional[datetime], float]:
+    """
+    Resolves the best available execution timestamp from persisted history.
+    Precedence: completed_at -> started_at -> selected_at.
+    Never synthesizes 'now' or fabricates a fresh failure timestamp.
+
+    Returns (effective_timestamp, age_days).
+    If all timestamps are absent (indeterminate record), age_days is float('inf').
+    """
+    ts = vh.get("completed_at") or vh.get("started_at") or vh.get("selected_at")
+    if ts is None:
+        return None, float("inf")
+    return ts, (now - ts).total_seconds() / 86400.0
+
+
+def _calculate_utility_score(vh: dict) -> float:
+    """
+    Calculates Beta smoothed fresher utility score (Alpha=1, Beta=4, prior=0.20).
+    Incomplete, failed, or invalid telemetry safely defaults to the prior.
+    """
+    raw_f = vh.get("fetched")
+    raw_e = vh.get("eligible")
+    is_invalid = False
+    if raw_f is not None and raw_f < 0:
+        is_invalid = True
+    if raw_e is not None and raw_e < 0:
+        is_invalid = True
+    if raw_f is not None and raw_e is not None and raw_e > raw_f:
+        is_invalid = True
+    if vh.get("completed_at") is None:
+        is_invalid = True
+
+    if is_invalid or raw_f is None:
+        f = 0
+        e = None
+    else:
+        f = raw_f
+        e = raw_e
+
+    alpha = 1.0
+    beta = 4.0
+
+    if e is None:
+        return alpha / (alpha + beta)
+
+    return (float(e) + alpha) / (float(f) + alpha + beta)
+
+
 def _get_variant_history(db: Session, candidate_ids: List[str]) -> Dict[str, Dict[str, dict]]:
     if not candidate_ids:
         return {}
 
     stmt = text("""
         SELECT DISTINCT ON (candidate_id, query_variant)
-               candidate_id, query_variant, jobs_fetched, jobs_fresher_eligible, completed_at, id
+               candidate_id, query_variant, jobs_fetched, jobs_fresher_eligible,
+               completed_at, started_at, selected_at, id
         FROM search_execution
         WHERE candidate_id = ANY(:cids)
           AND status IN ('succeeded', 'failed')
@@ -174,11 +223,17 @@ def _get_variant_history(db: Session, candidate_ids: List[str]) -> Dict[str, Dic
 
     vh = {cid: {} for cid in candidate_ids}
     for row in rows:
-        cid, variant, fetched, eligible, comp_at, exec_id = row
+        if len(row) >= 8:
+            cid, variant, fetched, eligible, comp_at, started_at, selected_at, exec_id = row[:8]
+        else:
+            cid, variant, fetched, eligible, comp_at, exec_id = row[:6]
+            started_at, selected_at = None, None
         vh[cid][variant] = {
             "fetched": fetched,
             "eligible": eligible,  # None = telemetry missing (legacy); 0 = no freshers
             "completed_at": comp_at,
+            "started_at": started_at,
+            "selected_at": selected_at,
             "id": exec_id
         }
     return vh
@@ -272,24 +327,19 @@ def select_next_search(
             v_hist = variant_histories.get(c.candidate_id, {})
             available = []
             explore_queue = []
-            zero_yield_variants = 0
-            no_fresher_variants = 0
+            variant_categories = {}
 
             # 1. Parse & Filter Active Penalties
             for v in c.variants:
                 vh = v_hist.get(v)
                 if not vh:
+                    variant_categories[v] = "UNTRIED"
                     explore_queue.append(v)
                     available.append(v)
                     continue
 
                 # Telemetry Integrity & Safety
-                completed_at = vh.get("completed_at")
-                if completed_at is None:
-                    # Treat NULL completed_at as an active/failed execution bounded to now
-                    completed_at = now
-
-                age_days = (now - completed_at).total_seconds() / 86400.0
+                effective_ts, age_days = _resolve_effective_execution_timestamp(vh, now)
 
                 raw_fetched = vh.get("fetched")
                 raw_eligible = vh.get("eligible")
@@ -315,26 +365,32 @@ def select_next_search(
 
                 if fetched is None:
                     # UNKNOWN/FAILED: bounded retry (1 day cooldown)
+                    variant_categories[v] = "UNKNOWN"
                     if age_days < 1.0:
                         is_penalized = True
                     else:
                         explore_queue.append(v)
                 elif fetched == 0:
                     # NO_INVENTORY: 7 day penalty
+                    variant_categories[v] = "NO_INVENTORY"
                     if age_days < 7.0:
                         is_penalized = True
-                        zero_yield_variants += 1
                     else:
                         explore_queue.append(v)
                 elif fresher_eligible == 0:
                     # INVENTORY_NO_FRESHER: 7 day penalty
+                    variant_categories[v] = "NO_FRESHER"
                     if age_days < 7.0:
                         is_penalized = True
-                        no_fresher_variants += 1
                     else:
                         explore_queue.append(v)
                 else:
                     # PRODUCTIVE / LEGACY: never penalized
+                    if raw_eligible is None:
+                        variant_categories[v] = "LEGACY"
+                    else:
+                        variant_categories[v] = "PRODUCTIVE"
+
                     if age_days > 30.0:
                         explore_queue.append(v)
 
@@ -343,17 +399,23 @@ def select_next_search(
 
             # 2. Fallback & Adaptive Broadening
             if not available:
-                if zero_yield_variants > 0 and no_fresher_variants == 0:
+                # Fail-closed drought inference: ALL candidate variants must be verified NO_INVENTORY.
+                # Any UNKNOWN, incomplete, or NO_FRESHER variant blocks broadening.
+                all_variants_verified_no_inventory = (
+                    len(c.variants) > 0
+                    and all(variant_categories.get(v) == "NO_INVENTORY" for v in c.variants)
+                )
+                if all_variants_verified_no_inventory:
                     if c.location_id.startswith("LOC-BLR-") and c.location_id != "LOC-BLR-001":
                         c.retrieval_location = "Bengaluru"
 
-                # Explicit fallback policy: retry the penalized variant attempted the longest ago
-                # Using execution `id` guarantees perfect deterministic multi-cycle round-robin
-                # across all penalized variants because `id` is strictly monotonic.
-                def get_fallback_priority(v_name: str):
+                # Fallback Policy: deterministic oldest-execution-ID selection among eligible fallback variants.
+                # Since search_execution.id is strictly monotonically increasing under candidate serialization,
+                # min(id) deterministically rotates through penalized variants oldest-attempt-first.
+                def get_fallback_priority(v_name: str) -> float:
                     h = v_hist.get(v_name)
                     if not h:
-                        return float('inf')
+                        return float("inf")
                     return h["id"]
 
                 c.query_variant = min(c.variants, key=get_fallback_priority)
@@ -371,39 +433,7 @@ def select_next_search(
 
             # 4. Utility Ranking (Beta Smoothing)
             else:
-                def get_utility_score(v_name: str) -> float:
-                    h = v_hist[v_name]
-
-                    # Apply identical integrity constraints for utility calculation
-                    raw_f = h.get("fetched")
-                    raw_e = h.get("eligible")
-                    is_invalid_util = False
-                    if raw_f is not None and raw_f < 0:
-                        is_invalid_util = True
-                    if raw_e is not None and raw_e < 0:
-                        is_invalid_util = True
-                    if raw_f is not None and raw_e is not None and raw_e > raw_f:
-                        is_invalid_util = True
-                    if h.get("completed_at") is None:
-                        is_invalid_util = True
-
-                    if is_invalid_util or raw_f is None:
-                        f = 0
-                        e = None
-                    else:
-                        f = raw_f
-                        e = raw_e
-
-                    # Prior belief: 1 in 5 jobs is fresher eligible (Alpha=1, Beta=4)
-                    alpha = 1.0
-                    beta = 4.0
-
-                    if e is None:
-                        return alpha / (alpha + beta)
-
-                    return (float(e) + alpha) / (float(f) + alpha + beta)
-
-                available.sort(key=lambda v: (-get_utility_score(v), v))
+                available.sort(key=lambda v: (-_calculate_utility_score(v_hist[v]), v))
                 c.query_variant = available[0]
         else:
             c.query_variant = c.role_canonical
