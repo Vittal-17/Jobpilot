@@ -176,8 +176,8 @@ def _get_variant_history(db: Session, candidate_ids: List[str]) -> Dict[str, Dic
     for row in rows:
         cid, variant, fetched, eligible, comp_at = row
         vh[cid][variant] = {
-            "fetched": fetched or 0,
-            "eligible": eligible if eligible is not None else -1,
+            "fetched": fetched,
+            "eligible": eligible,  # None = telemetry missing (legacy); 0 = no freshers
             "completed_at": comp_at
         }
     return vh
@@ -270,6 +270,8 @@ def select_next_search(
         if c.variants:
             v_hist = variant_histories.get(c.candidate_id, {})
             available = []
+            zero_yield_variants = 0
+            no_fresher_variants = 0
 
             for v in c.variants:
                 vh = v_hist.get(v)
@@ -277,16 +279,33 @@ def select_next_search(
                     available.append(v)
                     continue
 
-                # Check WEAK/NO-YIELD condition
-                is_weak_or_no_yield = (vh["eligible"] == 0)
+                # Check WEAK/NO-YIELD condition:
+                # NO_INVENTORY: fetched == 0 (provider returned nothing)
+                # INVENTORY_NO_FRESHER: fetched > 0 but eligible == 0
+                is_zero_inventory = vh["fetched"] == 0
+                is_no_fresher = vh["eligible"] == 0
                 is_recent = (now - vh["completed_at"]) < penalty_duration
 
-                if is_weak_or_no_yield and is_recent:
-                    continue # Penalized
+                if is_recent:
+                    if is_zero_inventory:
+                        zero_yield_variants += 1
+                        continue # NO_INVENTORY penalty
+                    if is_no_fresher:
+                        no_fresher_variants += 1
+                        continue # INVENTORY_NO_FRESHER penalty
+
                 available.append(v)
 
             if not available:
                 available = c.variants # Fallback: all penalized
+
+                # ADAPTIVE RETRIEVAL SCOPE
+                # If ALL variants were recently penalized, and NONE of them found inventory,
+                # the narrow taxonomy location genuinely has NO_INVENTORY.
+                # Broaden to canonical Bengaluru.
+                if zero_yield_variants > 0 and no_fresher_variants == 0:
+                    if c.location_id.startswith("LOC-BLR-") and c.location_id != "LOC-BLR-001":
+                        c.retrieval_location = "Bengaluru"
 
             c.query_variant = available[success_count % len(available)]
         else:
@@ -327,7 +346,8 @@ def select_next_search(
                     status='selected',
                     selected_at=now,
                     cycle_id=cycle_id,
-                    query_variant=candidate.query_variant
+                    query_variant=candidate.query_variant,
+                    retrieval_location=candidate.retrieval_location
                 )
                 db.add(claim)
                 db.flush() # Force IntegrityError if concurrent insert

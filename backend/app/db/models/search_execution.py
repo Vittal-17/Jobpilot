@@ -20,6 +20,7 @@ class SearchExecutionModel(Base):
     cycle_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
     query_variant: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    retrieval_location: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
 
     selected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
