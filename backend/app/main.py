@@ -1,7 +1,7 @@
 from app.api.endpoints.ingestion import verify_api_key
 from fastapi import Depends
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from app.api.endpoints import ingestion, auth, users, profile, jobs, saved_jobs, applications, searches
 
 app = FastAPI(
@@ -9,6 +9,15 @@ app = FastAPI(
     version="0.1.0",
     description="Backend API for the JobPilot automation platform.",
 )
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; img-src 'self' data: fastapi.tiangolo.com"
+    return response
 
 app.include_router(ingestion.router, prefix="/ingestion", tags=["ingestion"])
 app.include_router(auth.router, prefix="/v1/auth", tags=["auth"])
