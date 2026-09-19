@@ -7,7 +7,7 @@ import respx
 def test_missing_provider_id(monkeypatch, caplog):
     import logging
     caplog.set_level(logging.WARNING)
-    monkeypatch.setattr("app.providers.jooble.settings.jooble_api_key", "dummy")
+    monkeypatch.setattr("app.providers.jooble.settings.jooble_in_api_key", "dummy")
     query = JobSearchQuery(keywords="test", location="test")
     provider = JoobleProvider()
 
@@ -22,7 +22,7 @@ def test_missing_provider_id(monkeypatch, caplog):
     }
 
     with respx.mock:
-        respx.post("https://jooble.org/api/dummy").mock(return_value=httpx.Response(200, json=mock_resp))
+        respx.post("https://in.jooble.org/api/dummy").mock(return_value=httpx.Response(200, json=mock_resp))
         jobs = provider.search_jobs(query)
 
         assert len(jobs) == 0, "Should skip job with missing ID"

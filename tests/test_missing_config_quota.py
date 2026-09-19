@@ -14,7 +14,7 @@ def test_missing_jooble_config_does_not_consume_quota(db_session, monkeypatch):
     app.dependency_overrides[get_db] = lambda: db_session
     test_secret = "test_secret_12345"
     monkeypatch.setattr(settings, "api_secret_key", test_secret)
-    monkeypatch.setattr(settings, "jooble_api_key", "") # Missing!
+    monkeypatch.setattr(settings, "jooble_in_api_key", "") # Missing!
 
     payload = {"keywords": "py", "location": "blr"}
 

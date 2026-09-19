@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
 
 class JoobleProvider(JobProvider):
     def __init__(self):
-        self.api_key = settings.jooble_api_key
-        self.url = f"https://jooble.org/api/{self.api_key}"
+        self.api_key = settings.jooble_in_api_key
+        self.url = f"https://in.jooble.org/api/{self.api_key}"
 
     def validate_config(self):
         if not self.api_key:

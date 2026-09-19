@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     adzuna_safety_budget_daily: int = 25
     adzuna_account_limit_daily: int | None = None
 
-    jooble_api_key: str = ""
+    jooble_in_api_key: str = ""
     jooble_enabled: bool = True
     jooble_safety_budget_daily: int = 2
     jooble_safety_budget_lifetime: int = 500

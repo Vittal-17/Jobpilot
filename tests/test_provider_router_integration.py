@@ -10,7 +10,7 @@ from app.services.provider_router import get_provider_capacity, route_provider
 def test_postgres_quota_reads_do_not_mutate_usage(db_session, monkeypatch):
     monkeypatch.setattr(settings, "adzuna_app_id", "configured")
     monkeypatch.setattr(settings, "adzuna_app_key", "configured")
-    monkeypatch.setattr(settings, "jooble_api_key", "configured")
+    monkeypatch.setattr(settings, "jooble_in_api_key", "configured")
     now = datetime.now(timezone.utc)
     db_session.execute(
         text(
@@ -37,7 +37,7 @@ def test_postgres_quota_reads_do_not_mutate_usage(db_session, monkeypatch):
 def test_postgres_exhausted_adzuna_routes_jooble(db_session, monkeypatch):
     monkeypatch.setattr(settings, "adzuna_app_id", "configured")
     monkeypatch.setattr(settings, "adzuna_app_key", "configured")
-    monkeypatch.setattr(settings, "jooble_api_key", "configured")
+    monkeypatch.setattr(settings, "jooble_in_api_key", "configured")
     monkeypatch.setattr(settings, "adzuna_safety_budget_daily", 1)
     now = datetime.now(timezone.utc)
     db_session.execute(

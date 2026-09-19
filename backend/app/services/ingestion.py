@@ -220,6 +220,33 @@ def run_ingestion(db: Session, provider_name: str, provider: JobProvider, query:
     result.fetched = len(jobs)
 
     for job in jobs:
+        # P0. Geographic Rejection Validation
+        if job.location and not getattr(job, 'remote', False):
+            jl = job.location.lower()
+            ql = query.location.lower()
+
+            # Deterministic taxonomy-aware location normalization
+            from app.domain.taxonomy import LOCATION_CATALOG
+
+            valid_region_terms = {ql}
+            for loc in LOCATION_CATALOG:
+                loc_terms = [loc.canonical.lower()] + [a.lower() for a in loc.aliases]
+                if ql in loc_terms or any(t in ql for t in loc_terms):
+                    valid_region_terms.update(loc_terms)
+                    valid_region_terms.update(r.lower() for r in loc.related_areas)
+                    if loc.id.startswith("LOC-BLR"):
+                        valid_region_terms.update({"bengaluru", "bangalore"})
+                    break
+
+            # Extract basic tokens to avoid substring false positives, but simple substring for the query itself
+            import re
+            is_valid = any(re.search(r'\b' + re.escape(term) + r'\b', jl) for term in valid_region_terms)
+
+            if not is_valid:
+                logger.warning(f"Geographic rejection for job {job.source_job_id}: '{job.location}' does not align with regional intent '{query.location}'")
+                result.invalid += 1
+                continue
+
         try:
             with db.begin_nested():
                 db_job, created = save_job(db, job)

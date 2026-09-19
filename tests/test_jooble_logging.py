@@ -8,7 +8,7 @@ from app.providers.exceptions import ProviderNetworkError
 from app.core.config import settings
 
 def test_jooble_secret_logging_leak(monkeypatch, caplog):
-    monkeypatch.setattr(settings, "jooble_api_key", "TEST_JOOBLE_SECRET_123456")
+    monkeypatch.setattr(settings, "jooble_in_api_key", "TEST_JOOBLE_SECRET_123456")
     caplog.set_level(logging.ERROR)
 
     provider = JoobleProvider()
@@ -16,7 +16,7 @@ def test_jooble_secret_logging_leak(monkeypatch, caplog):
 
     with respx.mock:
         # Cause a realistic RequestError
-        respx.post("https://jooble.org/api/TEST_JOOBLE_SECRET_123456").mock(
+        respx.post("https://in.jooble.org/api/TEST_JOOBLE_SECRET_123456").mock(
             side_effect=httpx.RequestError("Mocked connection failure")
         )
 

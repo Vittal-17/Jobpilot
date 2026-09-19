@@ -182,7 +182,7 @@ def validate_secrets(config: dict):
             fail(f"Required secret {key} contains a placeholder value.")
 
     optional_keys = [
-        "ADZUNA_APP_ID", "ADZUNA_APP_KEY", "JOOBLE_API_KEY",
+        "ADZUNA_APP_ID", "ADZUNA_APP_KEY", "JOOBLE_IN_API_KEY",
         "BACKUP_ENCRYPTION_KEY", "BACKUP_S3_ACCESS_KEY", "BACKUP_S3_SECRET_KEY"
     ]
     for key in optional_keys:

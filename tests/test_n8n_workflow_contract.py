@@ -38,7 +38,7 @@ def test_search_cycle_workflow_contract():
 
     serialized = json.dumps(workflow).lower()
     assert "adzuna_app_key" not in serialized
-    assert "jooble_api_key" not in serialized
+    assert "jooble_in_api_key" not in serialized
     assert '"provider":"adzuna"' not in serialized.replace(" ", "")
     assert '"provider":"jooble"' not in serialized.replace(" ", "")
     assert serialized.count("/ingestion/internal/search") == 1
