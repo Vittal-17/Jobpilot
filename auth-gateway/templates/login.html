@@ -186,6 +186,7 @@
 
         button[type="submit"].loading {
             color: transparent;
+            pointer-events: none;
         }
 
         button[type="submit"].loading::after {
@@ -250,7 +251,7 @@
             <h2>JobPilot</h2>
         </div>
 
-        <div class="error-msg" id="errorMsg">{{ error }}</div>
+        <div class="error-msg" id="errorMsg" role="alert" aria-live="assertive">{{ error }}</div>
 
         <form method="POST" action="/login" id="loginForm">
             <input type="hidden" name="rd" value="{{ rd }}">
@@ -263,7 +264,7 @@
             <div class="form-group">
                 <label for="password">Access Token</label>
                 <input type="password" id="password" name="password" required autocomplete="current-password">
-                <button type="button" class="pwd-toggle" id="pwdToggle">SHOW</button>
+                <button type="button" class="pwd-toggle" id="pwdToggle" aria-label="Show password" aria-pressed="false">SHOW</button>
             </div>
 
             <button type="submit" id="submitBtn">Initialize Session</button>
@@ -285,14 +286,19 @@
             if (pwdInput.type === 'password') {
                 pwdInput.type = 'text';
                 pwdToggle.textContent = 'HIDE';
+                pwdToggle.setAttribute('aria-label', 'Hide password');
+                pwdToggle.setAttribute('aria-pressed', 'true');
             } else {
                 pwdInput.type = 'password';
                 pwdToggle.textContent = 'SHOW';
+                pwdToggle.setAttribute('aria-label', 'Show password');
+                pwdToggle.setAttribute('aria-pressed', 'false');
             }
         });
 
         form.addEventListener('submit', () => {
             submitBtn.classList.add('loading');
+            submitBtn.disabled = true;
         });
     </script>
 </body>
