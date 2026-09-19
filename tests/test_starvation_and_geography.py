@@ -128,14 +128,42 @@ def test_geographic_rejection_taxonomy_aware(db_session, monkeypatch):
                 Job(
                     title="Dev", company="C5", source="t", source_job_id="5", discovered_at=datetime.now(timezone.utc),
                     location="Indianapolis, IN", description="5" # Should not match "India"
+                ),
+                Job(
+                    title="Dev", company="C6", source="t", source_job_id="6", discovered_at=datetime.now(timezone.utc),
+                    location="Hyderabad, Telangana", description="6"
+                ),
+                Job(
+                    title="Dev", company="C7", source="t", source_job_id="7", discovered_at=datetime.now(timezone.utc),
+                    location="Pune, Maharashtra", description="7"
+                ),
+                Job(
+                    title="Dev", company="C8", source="t", source_job_id="8", discovered_at=datetime.now(timezone.utc),
+                    location="Mumbai, India", description="8"
+                ),
+                Job(
+                    title="Dev", company="C9", source="t", source_job_id="9", discovered_at=datetime.now(timezone.utc),
+                    location="Chennai", description="9"
+                ),
+                Job(
+                    title="Dev", company="C10", source="t", source_job_id="10", discovered_at=datetime.now(timezone.utc),
+                    location="India", description="10" # Broad India
+                ),
+                Job(
+                    title="Dev", company="C11", source="t", source_job_id="11", discovered_at=datetime.now(timezone.utc),
+                    location="Karnataka, India", description="11" # Broad Karnataka
+                ),
+                Job(
+                    title="Dev", company="C12", source="t", source_job_id="12", discovered_at=datetime.now(timezone.utc),
+                    location="Bengaluru, Karnataka, India", description="12" # Valid full string
                 )
             ]
 
     monkeypatch.setattr("app.services.ingestion.acquire_provider_request_slot", lambda db, n: True)
     q = JobSearchQuery(keywords="dev", location="Whitefield") # Whitefield is LOC-BLR-002
     res, _ = run_ingestion(db_session, "test", TestProvider(), q)
-    assert res.invalid == 2 # Las Vegas and Indianapolis should be rejected
-    assert res.created == 3 # The valid ones (ITPL, Electronic City, Remote)
+    assert res.invalid == 8 # Las Vegas, Indianapolis, Hyderabad, Pune, Mumbai, Chennai, India, Karnataka
+    assert res.created == 4 # Electronic City, ITPL, Remote, Bengaluru Karnataka India
 
 def test_recommendation_creation_end_to_end(db_session, monkeypatch):
     from app.api.endpoints.ingestion import internal_execute_search, claim_notifications, NotificationClaimRequest

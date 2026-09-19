@@ -235,7 +235,7 @@ def run_ingestion(db: Session, provider_name: str, provider: JobProvider, query:
                     valid_region_terms.update(loc_terms)
                     valid_region_terms.update(r.lower() for r in loc.related_areas)
                     if loc.id.startswith("LOC-BLR"):
-                        valid_region_terms.update({"bengaluru", "bangalore", "karnataka", "india"})
+                        valid_region_terms.update({"bengaluru", "bangalore"})
                     break
 
             # Extract basic tokens to avoid substring false positives, but simple substring for the query itself
