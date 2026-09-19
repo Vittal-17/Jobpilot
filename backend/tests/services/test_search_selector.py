@@ -194,11 +194,11 @@ class TestRetrievalOutcomeClassification:
         db_mock = MagicMock()
         # Mock row format: cid, variant, fetched, eligible, comp_at
         db_mock.execute.return_value.fetchall.return_value = [
-            ("CID-1", "var1", 0, None, now),       # NO_INVENTORY
-            ("CID-1", "var2", 25, 0, now),         # INVENTORY_NO_FRESHER
-            ("CID-2", "var1", 25, 5, now),         # PRODUCTIVE
-            ("CID-2", "var2", 10, None, now),      # LEGACY/UNKNOWN (fetched>0, eligible=None)
-            ("CID-3", "var1", None, None, now),    # FAILED EXECUTION (fetched=None)
+            ("CID-1", "var1", 0, None, now, 1),       # NO_INVENTORY
+            ("CID-1", "var2", 25, 0, now, 2),         # INVENTORY_NO_FRESHER
+            ("CID-2", "var1", 25, 5, now, 3),         # PRODUCTIVE
+            ("CID-2", "var2", 10, None, now, 4),      # LEGACY/UNKNOWN (fetched>0, eligible=None)
+            ("CID-3", "var1", None, None, now, 5),    # FAILED EXECUTION (fetched=None)
         ]
 
         vh = _get_variant_history(db_mock, ["CID-1", "CID-2", "CID-3"])
@@ -266,8 +266,7 @@ class TestZeroYieldVariantPenalization:
                             "fresher test role": {
                                 "fetched": 0,
                                 "eligible": None,
-                                "completed_at": now - timedelta(hours=1),
-                            }
+                                "completed_at": now - timedelta(hours=1), "id": 1664}
                             # "test role" has no history → untried
                         }
                     }
@@ -318,8 +317,7 @@ class TestZeroYieldVariantPenalization:
                             "variant_a": {
                                 "fetched": 0,
                                 "eligible": None,
-                                "completed_at": now - timedelta(hours=2),
-                            }
+                                "completed_at": now - timedelta(hours=2), "id": 10}
                             # variant_b untried
                         }
                     }
@@ -365,13 +363,11 @@ class TestZeroYieldVariantPenalization:
                             "variant_a": {
                                 "fetched": 0,
                                 "eligible": None,
-                                "completed_at": now - timedelta(hours=2),
-                            },
+                                "completed_at": now - timedelta(hours=2), "id": 10},
                             "variant_b": {
                                 "fetched": 15,
                                 "eligible": 0,
-                                "completed_at": now - timedelta(hours=3),
-                            },
+                                "completed_at": now - timedelta(hours=3), "id": 20},
                         }
                     }
 
@@ -431,13 +427,11 @@ class TestAdaptiveRetrievalScope:
                             "variant_a": {
                                 "fetched": 0, # NO_INVENTORY
                                 "eligible": None,
-                                "completed_at": now - timedelta(hours=2),
-                            },
+                                "completed_at": now - timedelta(hours=2), "id": 10},
                             "variant_b": {
                                 "fetched": 0, # NO_INVENTORY
                                 "eligible": None,
-                                "completed_at": now - timedelta(hours=3),
-                            },
+                                "completed_at": now - timedelta(hours=3), "id": 20},
                         }
                     }
 
@@ -484,13 +478,11 @@ class TestAdaptiveRetrievalScope:
                             "variant_a": {
                                 "fetched": 15,
                                 "eligible": 0, # NO_FRESHER
-                                "completed_at": now - timedelta(hours=2),
-                            },
+                                "completed_at": now - timedelta(hours=2), "id": 10},
                             "variant_b": {
                                 "fetched": 10,
                                 "eligible": 0, # NO_FRESHER
-                                "completed_at": now - timedelta(hours=3),
-                            },
+                                "completed_at": now - timedelta(hours=3), "id": 20},
                         }
                     }
 
@@ -530,13 +522,11 @@ class TestAdaptiveRetrievalScope:
                             "variant_a": {
                                 "fetched": 0,
                                 "eligible": None,
-                                "completed_at": now - timedelta(hours=2),
-                            },
+                                "completed_at": now - timedelta(hours=2), "id": 10},
                             "variant_b": {
                                 "fetched": 0,
                                 "eligible": None,
-                                "completed_at": now - timedelta(hours=3),
-                            },
+                                "completed_at": now - timedelta(hours=3), "id": 20},
                         }
                     }
 
@@ -628,13 +618,11 @@ class TestAdaptiveRetrievalScope:
                             "variant_a": {
                                 "fetched": 0, # NO_INVENTORY
                                 "eligible": None,
-                                "completed_at": now - timedelta(hours=2),
-                            },
+                                "completed_at": now - timedelta(hours=2), "id": 10},
                             "variant_b": {
                                 "fetched": 10, # INVENTORY_NO_FRESHER
                                 "eligible": 0,
-                                "completed_at": now - timedelta(hours=3),
-                            },
+                                "completed_at": now - timedelta(hours=3), "id": 20},
                         }
                     }
 
@@ -674,13 +662,11 @@ class TestAdaptiveRetrievalScope:
                             "variant_a": {
                                 "fetched": None, # UNKNOWN / FAILED
                                 "eligible": None,
-                                "completed_at": now - timedelta(hours=2),
-                            },
+                                "completed_at": now - timedelta(hours=2), "id": 10},
                             "variant_b": {
                                 "fetched": None, # UNKNOWN / FAILED
                                 "eligible": None,
-                                "completed_at": now - timedelta(hours=3),
-                            },
+                                "completed_at": now - timedelta(hours=3), "id": 20},
                         }
                     }
 
@@ -700,3 +686,181 @@ class TestAdaptiveRetrievalScope:
                     # None is NOT zero inventory. So neither zero_yield_variants nor no_fresher_variants increment.
                     # It falls back to available=variants, but since zero_yield_variants == 0, it MUST NOT broaden!
                     assert result.candidate.retrieval_location is None
+
+    @patch("app.services.search_selector._clean_abandoned_claims")
+    def test_negative_telemetry_becomes_unknown_not_no_inventory(self, mock_clean):
+        now = datetime.now(timezone.utc)
+        candidate = self._make_candidate(variants=["v_neg"])
+        candidate.location_id = "LOC-BLR-002"
+        with patch("app.services.search_selector.generate_candidates", return_value=[candidate]):
+            with patch("app.services.search_selector._get_history", return_value={}):
+                with patch("app.services.search_selector._get_variant_history") as mock_vh:
+                    mock_vh.return_value = {
+                        candidate.candidate_id: {
+                            "v_neg": {"fetched": -5, "eligible": -2, "completed_at": now - timedelta(hours=2), "id": 10},
+                        }
+                    }
+                    db_mock = MagicMock()
+                    db_mock.begin_nested.return_value.__enter__ = MagicMock()
+                    db_mock.begin_nested.return_value.__exit__ = MagicMock()
+                    with patch("app.services.search_selector.SearchExecutionModel", return_value=MagicMock()):
+                        from app.services.search_selector import select_next_search
+                        result = select_next_search(db_mock, reference_time=now)
+                        assert result.candidate.query_variant == "v_neg"
+                        assert result.candidate.retrieval_location is None
+
+    @patch("app.services.search_selector._clean_abandoned_claims")
+    def test_null_completed_at_treated_as_active_unknown(self, mock_clean):
+        now = datetime.now(timezone.utc)
+        candidate = self._make_candidate(variants=["v_good", "v_null"])
+        with patch("app.services.search_selector.generate_candidates", return_value=[candidate]):
+            with patch("app.services.search_selector._get_history", return_value={}):
+                with patch("app.services.search_selector._get_variant_history") as mock_vh:
+                    mock_vh.return_value = {
+                        candidate.candidate_id: {
+                            "v_good": {"fetched": 10, "eligible": 10, "completed_at": now - timedelta(days=10), "id": 11},
+                            "v_null": {"fetched": 100, "eligible": 100, "completed_at": None, "id": 12},
+                        }
+                    }
+                    db_mock = MagicMock()
+                    db_mock.begin_nested.return_value.__enter__ = MagicMock()
+                    db_mock.begin_nested.return_value.__exit__ = MagicMock()
+                    with patch("app.services.search_selector.SearchExecutionModel", return_value=MagicMock()):
+                        from app.services.search_selector import select_next_search
+                        result = select_next_search(db_mock, reference_time=now)
+                        assert result.candidate.query_variant == "v_good"
+
+    @patch("app.services.search_selector._clean_abandoned_claims")
+    def test_impossible_fresher_count_treated_as_unknown(self, mock_clean):
+        now = datetime.now(timezone.utc)
+        candidate = self._make_candidate(variants=["v_good", "v_impossible"])
+        with patch("app.services.search_selector.generate_candidates", return_value=[candidate]):
+            with patch("app.services.search_selector._get_history", return_value={}):
+                with patch("app.services.search_selector._get_variant_history") as mock_vh:
+                    mock_vh.return_value = {
+                        candidate.candidate_id: {
+                            "v_good": {"fetched": 10, "eligible": 10, "completed_at": now - timedelta(days=10), "id": 13},
+                            "v_impossible": {"fetched": 10, "eligible": 20, "completed_at": now - timedelta(days=10), "id": 14},
+                        }
+                    }
+                    db_mock = MagicMock()
+                    db_mock.begin_nested.return_value.__enter__ = MagicMock()
+                    db_mock.begin_nested.return_value.__exit__ = MagicMock()
+                    with patch("app.services.search_selector.SearchExecutionModel", return_value=MagicMock()):
+                        from app.services.search_selector import select_next_search
+                        result = select_next_search(db_mock, reference_time=now)
+                        assert result.candidate.query_variant == "v_impossible"
+
+    def test_true_multi_cycle_fallback_fairness_with_real_db(self):
+        from app.db.database import SessionLocal
+        from app.db.models.search_execution import SearchExecutionModel
+        from app.services.search_selector import select_next_search, _clean_abandoned_claims
+        db = SessionLocal()
+        cid = "ROLE-TEST::LOC-TEST"
+        v1 = "v_dead1"
+        v2 = "v_dead2"
+        now = datetime.now(timezone.utc)
+        try:
+            candidate = self._make_candidate(variants=[v1, v2])
+            candidate.candidate_id = cid
+            candidate.priority = 1
+            with patch("app.services.search_selector.generate_candidates", return_value=[candidate]):
+                with patch("app.services.search_selector._get_history", return_value={}):
+                    e1 = SearchExecutionModel(
+                        candidate_id=cid, status="succeeded", query_variant=v1,
+                        jobs_fetched=0, jobs_fresher_eligible=0,
+                        selected_at=now - timedelta(hours=10), completed_at=now - timedelta(hours=9)
+                    )
+                    db.add(e1)
+                    db.commit()
+                    db.refresh(e1)
+                    e2 = SearchExecutionModel(
+                        candidate_id=cid, status="succeeded", query_variant=v2,
+                        jobs_fetched=0, jobs_fresher_eligible=0,
+                        selected_at=now - timedelta(hours=8), completed_at=now - timedelta(hours=7)
+                    )
+                    db.add(e2)
+                    db.commit()
+                    db.refresh(e2)
+                    result1 = select_next_search(db, reference_time=now)
+                    assert result1.candidate.query_variant == v1
+                    future_time_1 = now + timedelta(minutes=20)
+                    # Simulate the ingestion pipeline completing the search with 0 jobs
+                    exec_row_1 = db.query(SearchExecutionModel).filter_by(id=result1.execution_id).first()
+                    exec_row_1.status = "succeeded"
+                    exec_row_1.jobs_fetched = 0
+                    exec_row_1.jobs_fresher_eligible = 0
+                    exec_row_1.completed_at = future_time_1
+                    db.commit()
+                    result2 = select_next_search(db, reference_time=future_time_1)
+                    assert result2.candidate.query_variant == v2
+                    future_time_2 = future_time_1 + timedelta(minutes=20)
+                    exec_row_2 = db.query(SearchExecutionModel).filter_by(id=result2.execution_id).first()
+                    exec_row_2.status = "succeeded"
+                    exec_row_2.jobs_fetched = 0
+                    exec_row_2.jobs_fresher_eligible = 0
+                    exec_row_2.completed_at = future_time_2
+                    db.commit()
+                    result3 = select_next_search(db, reference_time=future_time_2)
+                    assert result3.candidate.query_variant == v1
+        finally:
+            db.query(SearchExecutionModel).filter(SearchExecutionModel.candidate_id == cid).delete()
+            db.commit()
+            db.close()
+
+    def test_db_backed_fallback_fairness_with_identical_timestamps(self):
+        from app.db.database import SessionLocal
+        from app.db.models.search_execution import SearchExecutionModel
+        from app.services.search_selector import select_next_search, _clean_abandoned_claims
+        db = SessionLocal()
+        cid = "ROLE-TEST::LOC-TEST-TIE"
+        v1 = "v_tie1"
+        v2 = "v_tie2"
+        now = datetime.now(timezone.utc)
+        try:
+            candidate = self._make_candidate(variants=[v1, v2])
+            candidate.candidate_id = cid
+            candidate.priority = 1
+            with patch("app.services.search_selector.generate_candidates", return_value=[candidate]):
+                with patch("app.services.search_selector._get_history", return_value={}):
+                    e1 = SearchExecutionModel(
+                        candidate_id=cid, status="succeeded", query_variant=v1,
+                        jobs_fetched=0, jobs_fresher_eligible=0,
+                        selected_at=now - timedelta(hours=10), completed_at=now - timedelta(hours=9)
+                    )
+                    db.add(e1)
+                    db.commit()
+                    db.refresh(e1)
+                    e2 = SearchExecutionModel(
+                        candidate_id=cid, status="succeeded", query_variant=v2,
+                        jobs_fetched=0, jobs_fresher_eligible=0,
+                        selected_at=now - timedelta(hours=8), completed_at=now - timedelta(hours=9)
+                    )
+                    db.add(e2)
+                    db.commit()
+                    db.refresh(e2)
+                    result1 = select_next_search(db, reference_time=now)
+                    assert result1.candidate.query_variant == v1
+                    future_time_1 = now + timedelta(minutes=20)
+                    # Simulate the ingestion pipeline completing the search with 0 jobs
+                    exec_row_1 = db.query(SearchExecutionModel).filter_by(id=result1.execution_id).first()
+                    exec_row_1.status = "succeeded"
+                    exec_row_1.jobs_fetched = 0
+                    exec_row_1.jobs_fresher_eligible = 0
+                    exec_row_1.completed_at = future_time_1
+                    db.commit()
+                    result2 = select_next_search(db, reference_time=future_time_1)
+                    assert result2.candidate.query_variant == v2
+                    future_time_2 = future_time_1 + timedelta(minutes=20)
+                    exec_row_2 = db.query(SearchExecutionModel).filter_by(id=result2.execution_id).first()
+                    exec_row_2.status = "succeeded"
+                    exec_row_2.jobs_fetched = 0
+                    exec_row_2.jobs_fresher_eligible = 0
+                    exec_row_2.completed_at = future_time_2
+                    db.commit()
+                    result3 = select_next_search(db, reference_time=future_time_2)
+                    assert result3.candidate.query_variant == v1
+        finally:
+            db.query(SearchExecutionModel).filter(SearchExecutionModel.candidate_id == cid).delete()
+            db.commit()
+            db.close()

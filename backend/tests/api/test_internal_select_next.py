@@ -114,6 +114,7 @@ def test_select_next_routing_failures_are_explicit_and_close_claim(
     }
     result = MagicMock()
     result.candidate = MagicMock()
+    result.policy_version = "v1"
     result.execution_id = 99
     mock_select.return_value = result
     mock_route.side_effect = errors[routing_error]
@@ -143,6 +144,7 @@ def test_routing_db_failure_does_not_leak_cleanup_failure(mock_select, mock_rout
 
     result = MagicMock()
     result.candidate = MagicMock()
+    result.policy_version = "v1"
     result.execution_id = 99
     mock_select.return_value = result
     mock_route.side_effect = ProviderRoutingUnavailable("secret database detail")

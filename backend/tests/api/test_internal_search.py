@@ -51,14 +51,14 @@ def test_internal_search_rejects_provider_without_execution():
 @patch("app.api.endpoints.ingestion.run_ingestion")
 def test_internal_search_success_without_execution_id_remains_legacy_compatible(mock_run_ingestion):
     # Mocking provider calls ensures no real quota is consumed during tests
-    mock_run_ingestion.return_value = IngestionResult(
+    mock_run_ingestion.return_value = (IngestionResult(
         provider="adzuna",
         fetched=10,
         created=5,
         duplicates=5,
         invalid=0,
         failed=0
-    )
+    ), [])
     headers = {"X-Api-Key": settings.api_secret_key}
     response = client.post("/ingestion/internal/search", headers=headers, json={
         "role_id": "ROLE-PY-001",
@@ -84,7 +84,7 @@ def test_internal_search_matching_execution_is_accepted(mock_run_ingestion):
     db = MagicMock()
     db.query.return_value.filter.return_value.first.return_value = claim
     app.dependency_overrides[get_db] = lambda: db
-    mock_run_ingestion.return_value = IngestionResult(provider="adzuna")
+    mock_run_ingestion.return_value = (IngestionResult(provider="adzuna"), [])
     try:
         response = client.post(
             "/ingestion/internal/search",

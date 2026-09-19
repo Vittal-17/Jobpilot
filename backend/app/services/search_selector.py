@@ -163,22 +163,23 @@ def _get_variant_history(db: Session, candidate_ids: List[str]) -> Dict[str, Dic
 
     stmt = text("""
         SELECT DISTINCT ON (candidate_id, query_variant)
-               candidate_id, query_variant, jobs_fetched, jobs_fresher_eligible, completed_at
+               candidate_id, query_variant, jobs_fetched, jobs_fresher_eligible, completed_at, id
         FROM search_execution
         WHERE candidate_id = ANY(:cids)
-          AND status = 'succeeded'
+          AND status IN ('succeeded', 'failed')
           AND query_variant IS NOT NULL
-        ORDER BY candidate_id, query_variant, completed_at DESC
+        ORDER BY candidate_id, query_variant, id DESC
     """)
     rows = db.execute(stmt, {"cids": candidate_ids}).fetchall()
 
     vh = {cid: {} for cid in candidate_ids}
     for row in rows:
-        cid, variant, fetched, eligible, comp_at = row
+        cid, variant, fetched, eligible, comp_at, exec_id = row
         vh[cid][variant] = {
             "fetched": fetched,
             "eligible": eligible,  # None = telemetry missing (legacy); 0 = no freshers
-            "completed_at": comp_at
+            "completed_at": comp_at,
+            "id": exec_id
         }
     return vh
 
@@ -270,44 +271,140 @@ def select_next_search(
         if c.variants:
             v_hist = variant_histories.get(c.candidate_id, {})
             available = []
+            explore_queue = []
             zero_yield_variants = 0
             no_fresher_variants = 0
 
+            # 1. Parse & Filter Active Penalties
             for v in c.variants:
                 vh = v_hist.get(v)
                 if not vh:
+                    explore_queue.append(v)
                     available.append(v)
                     continue
 
-                # Check WEAK/NO-YIELD condition:
-                # NO_INVENTORY: fetched == 0 (provider returned nothing)
-                # INVENTORY_NO_FRESHER: fetched > 0 but eligible == 0
-                is_zero_inventory = vh["fetched"] == 0
-                is_no_fresher = vh["eligible"] == 0
-                is_recent = (now - vh["completed_at"]) < penalty_duration
+                # Telemetry Integrity & Safety
+                completed_at = vh.get("completed_at")
+                if completed_at is None:
+                    # Treat NULL completed_at as an active/failed execution bounded to now
+                    completed_at = now
 
-                if is_recent:
-                    if is_zero_inventory:
+                age_days = (now - completed_at).total_seconds() / 86400.0
+
+                raw_fetched = vh.get("fetched")
+                raw_eligible = vh.get("eligible")
+
+                is_invalid = False
+                if raw_fetched is not None and raw_fetched < 0:
+                    is_invalid = True
+                if raw_eligible is not None and raw_eligible < 0:
+                    is_invalid = True
+                if raw_fetched is not None and raw_eligible is not None and raw_eligible > raw_fetched:
+                    is_invalid = True
+                if vh.get("completed_at") is None:
+                    is_invalid = True
+
+                if is_invalid:
+                    fetched = None
+                    fresher_eligible = None
+                else:
+                    fetched = raw_fetched
+                    fresher_eligible = raw_eligible
+
+                is_penalized = False
+
+                if fetched is None:
+                    # UNKNOWN/FAILED: bounded retry (1 day cooldown)
+                    if age_days < 1.0:
+                        is_penalized = True
+                    else:
+                        explore_queue.append(v)
+                elif fetched == 0:
+                    # NO_INVENTORY: 7 day penalty
+                    if age_days < 7.0:
+                        is_penalized = True
                         zero_yield_variants += 1
-                        continue # NO_INVENTORY penalty
-                    if is_no_fresher:
+                    else:
+                        explore_queue.append(v)
+                elif fresher_eligible == 0:
+                    # INVENTORY_NO_FRESHER: 7 day penalty
+                    if age_days < 7.0:
+                        is_penalized = True
                         no_fresher_variants += 1
-                        continue # INVENTORY_NO_FRESHER penalty
+                    else:
+                        explore_queue.append(v)
+                else:
+                    # PRODUCTIVE / LEGACY: never penalized
+                    if age_days > 30.0:
+                        explore_queue.append(v)
 
-                available.append(v)
+                if not is_penalized:
+                    available.append(v)
 
+            # 2. Fallback & Adaptive Broadening
             if not available:
-                available = c.variants # Fallback: all penalized
-
-                # ADAPTIVE RETRIEVAL SCOPE
-                # If ALL variants were recently penalized, and NONE of them found inventory,
-                # the narrow taxonomy location genuinely has NO_INVENTORY.
-                # Broaden to canonical Bengaluru.
                 if zero_yield_variants > 0 and no_fresher_variants == 0:
                     if c.location_id.startswith("LOC-BLR-") and c.location_id != "LOC-BLR-001":
                         c.retrieval_location = "Bengaluru"
 
-            c.query_variant = available[success_count % len(available)]
+                # Explicit fallback policy: retry the penalized variant attempted the longest ago
+                # Using execution `id` guarantees perfect deterministic multi-cycle round-robin
+                # across all penalized variants because `id` is strictly monotonic.
+                def get_fallback_priority(v_name: str):
+                    h = v_hist.get(v_name)
+                    if not h:
+                        return float('inf')
+                    return h["id"]
+
+                c.query_variant = min(c.variants, key=get_fallback_priority)
+
+            # 3. Exploration Priority
+            elif explore_queue:
+                def get_explore_priority(v_name: str):
+                    h = v_hist.get(v_name)
+                    if not h:
+                        return (0, 0) # UNTRIED (highest priority)
+                    return (1, h["id"]) # STALE (oldest execution id first)
+
+                explore_queue.sort(key=lambda v: (get_explore_priority(v), v))
+                c.query_variant = explore_queue[0]
+
+            # 4. Utility Ranking (Beta Smoothing)
+            else:
+                def get_utility_score(v_name: str) -> float:
+                    h = v_hist[v_name]
+
+                    # Apply identical integrity constraints for utility calculation
+                    raw_f = h.get("fetched")
+                    raw_e = h.get("eligible")
+                    is_invalid_util = False
+                    if raw_f is not None and raw_f < 0:
+                        is_invalid_util = True
+                    if raw_e is not None and raw_e < 0:
+                        is_invalid_util = True
+                    if raw_f is not None and raw_e is not None and raw_e > raw_f:
+                        is_invalid_util = True
+                    if h.get("completed_at") is None:
+                        is_invalid_util = True
+
+                    if is_invalid_util or raw_f is None:
+                        f = 0
+                        e = None
+                    else:
+                        f = raw_f
+                        e = raw_e
+
+                    # Prior belief: 1 in 5 jobs is fresher eligible (Alpha=1, Beta=4)
+                    alpha = 1.0
+                    beta = 4.0
+
+                    if e is None:
+                        return alpha / (alpha + beta)
+
+                    return (float(e) + alpha) / (float(f) + alpha + beta)
+
+                available.sort(key=lambda v: (-get_utility_score(v), v))
+                c.query_variant = available[0]
         else:
             c.query_variant = c.role_canonical
 
