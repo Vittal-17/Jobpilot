@@ -51,7 +51,43 @@ def is_fresher_eligible(title: str, description: str) -> bool:
         if all(v <= 1 for v in all_match_upper_bounds):
             return True
 
-    # 3. If no explicit years mentioned, check for fresher keywords in title or description
+    # 3. Internship-role recognition (title or structured role-context only)
+    # Matches "Intern" or "Internship" as the role itself, not incidental mentions
+    # like "mentoring interns" or "internship experience preferred".
+    # Administrative/program-management titles are excluded even when they
+    internship_role_pattern = r'\bintern(?:ship)?\b'
+    internship_admin_signals = [
+        r'\bintern(?:ship)?\s+(?:program\s+|operations?\s+)?(?:coordinator|administrator|specialist)\b',
+        r'\bintern(?:ship)?\s+program\s+(?:manager|lead|director|head|officer)\b',
+        r'\bintern(?:ship)?\s+program\s*(?:[-–:]\s*\d{4})?\s*(?:\(.*?\)\s*)?$',
+        r'\bintern(?:ship)?\s+program\s+(?:for|of)\b',
+        r'\bintern(?:ship)?\s+(?:recruitment|support)\b',
+        r'\bintern(?:ship)?\s+operations?\s+(?:specialist|lead|manager|director|head|officer)\b',
+        r'\b(?:coordinator|administrator)\s*[-–:,]?\s*(?:for\s+|of\s+)intern(?:ship)?\b',
+        r'\b(?:coordinator|administrator)\s*[-–:,]\s*intern(?:ship)?\b',
+    ]
+
+    def _is_internship_role(text: str) -> bool:
+        """True when text names an internship position, not an admin role."""
+        text = (text or "").lower()
+        if not re.search(internship_role_pattern, text):
+            return False
+        if any(re.search(sig, text) for sig in seniority_signals):
+            return False
+        if any(re.search(sig, text) for sig in internship_admin_signals):
+            return False
+        return True
+
+    if _is_internship_role(title):
+        return True
+    # Check structured role-context lines in description: "Title:", "Position:", "Role:"
+    # Treat these as secondary titles: apply seniority and admin rejection before accepting.
+    role_context_pattern = r'(?:title|position|role)\s*:\s*([^\n]{0,120})'
+    for m in re.finditer(role_context_pattern, desc):
+        if _is_internship_role(m.group(1)):
+            return True
+
+    # 4. If no explicit years mentioned, check for fresher keywords in title or description
     fresher_signals = [
         r"\bfresher\b", r"\bentry[- ]level\b", r"\bgraduate\b",
         r"\bno experience\b", r"\bjunior\b", r"\bjr\.?\b"
@@ -60,5 +96,5 @@ def is_fresher_eligible(title: str, description: str) -> bool:
         if re.search(sig, combined):
             return True
 
-    # 4. Ambiguous experience -> Reject
+    # 5. Ambiguous experience -> Reject
     return False
