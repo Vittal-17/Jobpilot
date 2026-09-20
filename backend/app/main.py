@@ -3,12 +3,15 @@ from fastapi import Depends
 
 from fastapi import FastAPI
 from app.api.endpoints import ingestion, auth, users, profile, jobs, saved_jobs, applications, searches
+from app.middleware import SecurityHeadersMiddleware
 
 app = FastAPI(
     title="JobPilot API",
     version="0.1.0",
     description="Backend API for the JobPilot automation platform.",
 )
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 app.include_router(ingestion.router, prefix="/ingestion", tags=["ingestion"])
 app.include_router(auth.router, prefix="/v1/auth", tags=["auth"])
