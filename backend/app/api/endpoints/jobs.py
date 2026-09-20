@@ -30,6 +30,7 @@ def list_jobs(
 
     # Deterministic order: newest published/discovered first, then fallback to id
     # Nulls last for published_at to handle missing dates properly
+    # Note: This specific ordering is backed by the 'ix_jobs_pagination' composite index.
     query = base_query.order_by(
         JobModel.published_at.desc().nulls_last(),
         JobModel.discovered_at.desc(),
