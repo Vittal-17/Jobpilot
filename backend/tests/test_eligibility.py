@@ -45,7 +45,7 @@ def test_fresher_eligibility_cases():
         ("Principal Software Engineer - AI", "Requires 12+ years of experience", False),
     ]
     for title, desc, expected in cases:
-        assert is_fresher_eligible(title, desc) == expected, f"Failed: {title} | {desc} (Expected {expected})"
+        assert is_fresher_eligible(title, desc, is_snippet=False) == expected, f"Failed: {title} | {desc} (Expected {expected})"
 
 
 def test_production_derived_false_positives():
@@ -138,7 +138,7 @@ def test_role_context_vs_incidental_context():
         ("Software Engineering Intern", "You will work with the principal engineer and tech lead.", True),
     ]
     for title, desc, expected in cases:
-        assert is_fresher_eligible(title, desc) == expected, f"Failed: {title} | {desc} (Expected {expected})"
+        assert is_fresher_eligible(title, desc, is_snippet=False) == expected, f"Failed: {title} | {desc} (Expected {expected})"
 
 
 def test_decision_precedence():
@@ -167,7 +167,7 @@ def test_decision_precedence():
         (None, None, False),
     ]
     for title, desc, expected in cases:
-        assert is_fresher_eligible(title, desc) == expected, f"Failed: {title} | {desc} (Expected {expected})"
+        assert is_fresher_eligible(title, desc, is_snippet=False) == expected, f"Failed: {title} | {desc} (Expected {expected})"
 
     """Regression: internship-role postings are fresher-eligible."""
     cases = [
@@ -237,7 +237,7 @@ def test_decision_precedence():
         ("Open Position", "Title: Software Engineering Intern\n3+ years required", False),
     ]
     for title, desc, expected in cases:
-        assert is_fresher_eligible(title, desc) == expected, f"Failed: {title} | {desc} (Expected {expected})"
+        assert is_fresher_eligible(title, desc, is_snippet=False) == expected, f"Failed: {title} | {desc} (Expected {expected})"
 
 
 def test_skill_specific_vs_whole_candidate_zero_experience():
@@ -326,4 +326,69 @@ def test_skill_specific_vs_whole_candidate_zero_experience():
         ("Software Engineer", "No experience necessary. Minimum 3 years.", False),
     ]
     for title, desc, expected in cases:
-        assert is_fresher_eligible(title, desc) == expected, f"Failed: {title} | {desc} (Expected {expected})"
+        assert is_fresher_eligible(title, desc, is_snippet=False) == expected, f"Failed: {title} | {desc} (Expected {expected})"
+
+def test_fresher_eligibility_with_snippets():
+    """
+    Test that truncated/snippet evidence correctly prevents downstream logic from treating
+    missing >1 year experience requirements as authoritative absence.
+    Positive description-only evidence in snippets must NOT independently return True.
+    """
+    cases = [
+        # --- Authoritative Rejection ---
+        # Explicit >1 year in a snippet still decisively rejects.
+        ("Software Engineer", "Minimum 3 years experience required", True, False),
+
+        # --- <= 1 year Numeric Evidence ---
+        # Explicit <=1 year in a FULL description accepts.
+        ("Software Engineer", "0-1 years of experience", False, True),
+        # Explicit <=1 year in a SNIPPET is description-only and insufficient.
+        ("Software Engineer", "0-1 years of experience", True, False),
+        # BUT if <=1 year is in the TITLE (authoritative), it accepts even if description is a snippet.
+        ("Software Engineer (0-1 years)", "Great role", True, True),
+
+        # --- Role-level evidence ---
+        # A fresher role in the title STILL ACCEPTS even if it's a snippet,
+        # because the title is not truncated and is an authoritative signal.
+        ("Junior Software Engineer", "We are looking for a dev", True, True),
+
+        # --- Zero-experience declarations ---
+        # Explicit zero-experience declarations ACCEPT in a FULL description.
+        ("Software Engineer", "No prior experience required", False, True),
+        ("Software Engineer", "Freshers can apply", False, True),
+        # But in a SNIPPET, description-only declarations are insufficient.
+        ("Software Engineer", "No prior experience required", True, False),
+        ("Software Engineer", "Freshers can apply", True, False),
+        # BUT if the zero-experience declaration is in the TITLE (authoritative), it accepts.
+        ("Software Engineer - No prior experience required", "Great role", True, True),
+
+        # --- Structured Role Context ---
+        # A fresher structured role context extracted from a FULL description accepts.
+        ("Software Engineer", "Role: Junior Developer\nGreat team", False, True),
+        # A fresher structured role context extracted from a SNIPPET is not authoritative.
+        ("Software Engineer", "Role: Junior Developer\nGreat team", True, False),
+        # BUT a SENIOR structured role context extracted from a snippet DOES reject authoritatively.
+        ("Software Engineer", "Role: Senior Developer\n0-1 years", True, False),
+
+        # --- Combination ---
+        # If the snippet has both "0-1 years" AND a fresher role in the title, it accepts (via role).
+        ("Junior Software Engineer", "0-1 years of experience", True, True),
+    ]
+    for title, desc, is_snippet, expected in cases:
+        assert is_fresher_eligible(title, desc, is_snippet=is_snippet) == expected, f"Failed: {title} | {desc} | snippet={is_snippet} (Expected {expected})"
+
+
+def test_default_is_snippet_fail_closed():
+    """Verify that omitting is_snippet defaults to True (fail-closed for snippet evidence)."""
+    # Description-only <=1 year fails closed when is_snippet is omitted
+    assert is_fresher_eligible("Software Engineer", "0-1 years of experience") is False
+    # Description-only zero-experience declaration fails closed when is_snippet is omitted
+    assert is_fresher_eligible("Software Engineer", "No experience required") is False
+    # Description-only fresher declaration fails closed when is_snippet is omitted
+    assert is_fresher_eligible("Software Engineer", "Freshers can apply") is False
+    # Description-only structured role context fails closed when is_snippet is omitted
+    assert is_fresher_eligible("Software Engineer", "Role: Junior Developer") is False
+    # Explicit >1 year still rejects when is_snippet is omitted
+    assert is_fresher_eligible("Software Engineer", "3+ years required") is False
+    # Authoritative title still succeeds when is_snippet is omitted
+    assert is_fresher_eligible("Junior Software Engineer", "We are hiring") is True

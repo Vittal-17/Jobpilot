@@ -42,6 +42,7 @@ def test_adzuna_success():
     assert jobs[0].source == "adzuna"
     assert jobs[0].source_job_id == "123"
     assert jobs[0].salary_min == 10000
+    assert jobs[0].description_is_snippet is True
 
 @respx.mock
 def test_jooble_success():
@@ -69,3 +70,4 @@ def test_jooble_success():
     assert jobs[0].title == "Python Dev"
     assert jobs[0].source == "jooble"
     assert jobs[0].source_job_id == "abc"
+    assert jobs[0].description_is_snippet is True

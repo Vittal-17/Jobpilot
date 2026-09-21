@@ -108,7 +108,8 @@ def save_job(db: Session, job: PydanticJob) -> tuple[JobModel, bool]:
         url=str(job.url) if job.url else None,
         published_at=job.published_at,
         match_score=job.match_score,
-        canonical_hash=canonical_hash
+        canonical_hash=canonical_hash,
+        description_is_snippet=job.description_is_snippet
     )
 
     try:

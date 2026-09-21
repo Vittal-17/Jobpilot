@@ -23,6 +23,7 @@ class Job(BaseModel):
     remote: Optional[bool] = None
     employment_type: Optional[str] = None
     description: Optional[str] = None
+    description_is_snippet: bool = True
 
     # Compensation (salary should not be negative)
     salary_min: Optional[int] = Field(default=None, ge=0)

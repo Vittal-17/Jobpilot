@@ -202,7 +202,7 @@ def internal_execute_search(intent: CanonicalSearchIntent, db: Session = Depends
 
                     # Calculate fresher eligible count uniquely for THIS execution
                     for job in jobs:
-                        if is_fresher_eligible(job.title, job.description or ""):
+                        if is_fresher_eligible(job.title, job.description or "", is_snippet=job.description_is_snippet):
                             jobs_fresher_eligible += 1
 
                     active_user_ids = db.query(UserSearch.user_id).filter(UserSearch.enabled == True).distinct().all()
@@ -231,7 +231,7 @@ def internal_execute_search(intent: CanonicalSearchIntent, db: Session = Depends
                                 if job.id in existing_job_ids:
                                     continue
                                 job_resp = JobResponse.model_validate(job)
-                                if not is_fresher_eligible(job_resp.title, job_resp.description or ""):
+                                if not is_fresher_eligible(job_resp.title, job_resp.description or "", is_snippet=job_resp.description_is_snippet):
                                     continue
 
                                 match_res = calculate_match(job_resp, prefs)

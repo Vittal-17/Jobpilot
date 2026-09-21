@@ -11,6 +11,7 @@ class JobResponse(BaseModel):
     remote: Optional[bool] = None
     employment_type: Optional[str] = None
     description: Optional[str] = None
+    description_is_snippet: bool = True
     salary_min: Optional[int] = None
     salary_max: Optional[int] = None
     currency: Optional[str] = None

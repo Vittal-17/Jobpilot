@@ -123,9 +123,13 @@ def _experience_upper_bounds(combined: str) -> list[int]:
     return bounds
 
 
-def is_fresher_eligible(title: str, description: str) -> bool:
+def is_fresher_eligible(title: str, description: str, is_snippet: bool = True) -> bool:
     """
     Deterministic experience-eligibility gate.
+
+    Default provenance is fail-closed (is_snippet=True), meaning description-derived
+    positive evidence is insufficient unless the caller explicitly attests that
+    the text is an authoritative full description (is_snippet=False).
 
     Decision precedence, highest first:
 
@@ -133,10 +137,12 @@ def is_fresher_eligible(title: str, description: str) -> bool:
        rejects outright.
     2. An explicit numeric experience requirement anywhere in the posting is
        authoritative: any upper bound above 1 year rejects, and a requirement
-       wholly within 0-1 years accepts.
+       wholly within 0-1 years accepts (unless the evidence is a snippet, in which
+       case we cannot assume a >1 year requirement wasn't truncated, so we fall through).
     3. A role-level fresher or internship signal accepts, but only when it
-       appears in the title or a structured role-context line.
-    4. An explicit declaration that the position takes no experience accepts.
+       appears in the title or a structured role-context line (title-only when is_snippet=True).
+    4. An explicit declaration that the position takes no experience accepts
+       (title-only when is_snippet=True).
     5. Anything else is ambiguous and fails closed.
     """
     title = (title or "").lower()
@@ -155,18 +161,26 @@ def is_fresher_eligible(title: str, description: str) -> bool:
     if bounds:
         if any(v > 1 for v in bounds):
             return False
-        # Every mention fits 0-1 years
-        return True
+        # Every mention fits 0-1 years.
+        # If it is a snippet, description-only evidence is insufficient.
+        if not is_snippet or _experience_upper_bounds(title):
+            return True
+        # Fall through if the <=1 year requirement was only found in the truncated snippet.
 
     # 3. Role-level fresher/internship recognition, role context only
     for role_text in role_texts:
         if _is_internship_role(role_text) or _is_fresher_role(role_text):
-            return True
+            # If it is a snippet, positive evidence derived from the description is insufficient.
+            # We only accept it if the signal is present in the actual authoritative title.
+            if not is_snippet or role_text == title:
+                return True
 
     # 4. Explicit "no experience needed" declarations
     for sig in zero_experience_signals:
         if re.search(sig, combined):
-            return True
+            # If it is a snippet, description-only positive evidence is insufficient.
+            if not is_snippet or re.search(sig, title):
+                return True
 
     # 5. Ambiguous experience -> Reject
     return False
