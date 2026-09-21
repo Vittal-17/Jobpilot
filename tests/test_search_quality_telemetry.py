@@ -201,11 +201,10 @@ def test_variant_penalty_and_fallback(db_session, monkeypatch):
     assert res3.candidate is not None
     assert res3.candidate.query_variant == "Weak Variant"
 
-def test_legacy_telemetry_unpenalized(db_session, monkeypatch):
+def test_incomplete_telemetry_penalized(db_session, monkeypatch):
     """
-    Ensures that a variant with legacy telemetry (fetched>0, eligible=None, valid completed_at)
-    bypasses penalties (is not UNKNOWN/FAILED, NO_INVENTORY, or NO_FRESHER) and enters the
-    productive utility path with the Beta prior 1/(1+4)=0.20, ranking correctly.
+    Ensures that a variant with incomplete telemetry (fetched>0, eligible=None)
+    is treated conservatively as UNKNOWN rather than productive.
     """
     from unittest.mock import patch
     def mock_generate(db):
@@ -218,21 +217,21 @@ def test_legacy_telemetry_unpenalized(db_session, monkeypatch):
             priority=1,
             tier=1
         )
-        c.variants = ["Legacy Variant", "Strong Variant"]
+        c.variants = ["Incomplete Variant", "Strong Variant"]
         return [c]
     monkeypatch.setattr("app.services.search_selector.generate_candidates", mock_generate)
 
     now = datetime.now(timezone.utc)
 
-    # Legacy Variant has missing eligible telemetry but valid completion
+    # Incomplete Variant has missing eligible telemetry but valid completion
     db_session.add(SearchExecutionModel(
         candidate_id="ROLE-TEST2::LOC-TEST2",
         status="succeeded",
-        query_variant="Legacy Variant",
+        query_variant="Incomplete Variant",
         jobs_fetched=10,
         jobs_fresher_eligible=None, # Missing eligible telemetry
-        selected_at=now - timedelta(days=3),
-        completed_at=now - timedelta(days=3)
+        selected_at=now - timedelta(hours=2),
+        completed_at=now - timedelta(hours=2)
     ))
     db_session.commit()
 
@@ -243,33 +242,17 @@ def test_legacy_telemetry_unpenalized(db_session, monkeypatch):
         query_variant="Strong Variant",
         jobs_fetched=20,
         jobs_fresher_eligible=10,
-        selected_at=now - timedelta(days=2),
-        completed_at=now - timedelta(days=2)
+        selected_at=now - timedelta(hours=1),
+        completed_at=now - timedelta(hours=1)
     ))
     db_session.commit()
 
-    res = select_next_search(db_session, reference_time=now)
+    with patch("app.services.search_selector._get_history", return_value={"ROLE-TEST2::LOC-TEST2": {"last_success": now - timedelta(days=2), "last_selected": now - timedelta(days=2)}}):
+        res = select_next_search(db_session, reference_time=now)
+
     assert res.candidate is not None
-    # Utility check: Strong is (10+1)/(20+5)=0.44. Legacy is 1/5=0.20. Strong wins.
+    # Strong variant should win because Incomplete Variant is penalized (UNKNOWN within 1 day cooldown)
     assert res.candidate.query_variant == "Strong Variant"
-
-    claim = db_session.query(SearchExecutionModel).filter_by(id=res.execution_id).first()
-    db_session.delete(claim)
-    db_session.commit()
-
-    # Apply 7-day NO_INVENTORY penalty to Strong Variant
-    db_session.execute(
-        SearchExecutionModel.__table__.update()
-        .where(SearchExecutionModel.query_variant == "Strong Variant")
-        .values(jobs_fetched=0, jobs_fresher_eligible=0, completed_at=now - timedelta(hours=1))
-    )
-    db_session.commit()
-
-    with patch("app.services.search_selector._get_history", return_value={}):
-        res2 = select_next_search(db_session, reference_time=now)
-        assert res2.candidate is not None
-        # Legacy Variant is never penalized, so it safely evaluates and is selected.
-        assert res2.candidate.query_variant == "Legacy Variant"
 
 def test_unknown_telemetry_1_day_penalty(db_session, monkeypatch):
     """

@@ -239,11 +239,11 @@ def _get_variant_history(db: Session, candidate_ids: List[str]) -> Dict[str, Dic
     return vh
 
 def _clean_abandoned_claims(db: Session, reference_time: datetime | None = None) -> int:
-    """Fails claims that were selected more than 15 minutes ago but never transitioned to started.
+    """Fails claims that were selected or started older than ABANDONED_CLAIM_MINUTES ago but never transitioned to a terminal state.
 
-    A catastrophic failure after selected -> started may leave the execution in started.
-    The current abandonment cleanup only reclaims stale selected claims. Recovery/reclamation
-    of stale started executions is deferred to a future milestone.
+    The ABANDONED_CLAIM_MINUTES constant defines an explicit 15-minute lease boundary for executions in the started state.
+    We treat started_at older than ABANDONED_CLAIM_MINUTES as an abandonment lease expiry, not as proof that a worker process is dead.
+    This safely reclaims both stale selected claims and stale started claims whose lease has expired.
     """
     threshold = (reference_time or datetime.now(timezone.utc)) - timedelta(
         minutes=ABANDONED_CLAIM_MINUTES
@@ -251,7 +251,8 @@ def _clean_abandoned_claims(db: Session, reference_time: datetime | None = None)
     stmt = text("""
         UPDATE search_execution
         SET status = 'failed', completed_at = :now, error_message = 'abandoned claim'
-        WHERE status = 'selected' AND selected_at < :threshold
+        WHERE (status = 'selected' AND selected_at < :threshold)
+           OR (status = 'started' AND COALESCE(started_at, selected_at) < :threshold)
     """)
     try:
         with Session(db.get_bind()) as cleanup_db:
@@ -391,8 +392,8 @@ def select_next_search(
 
                 is_penalized = False
 
-                if fetched is None:
-                    # UNKNOWN/FAILED: bounded retry (1 day cooldown)
+                if fetched is None or (fetched > 0 and fresher_eligible is None):
+                    # UNKNOWN/FAILED/INCOMPLETE: bounded retry (1 day cooldown)
                     variant_categories[v] = "UNKNOWN"
                     if age_days < 1.0:
                         is_penalized = True
@@ -413,11 +414,8 @@ def select_next_search(
                     else:
                         explore_queue.append(v)
                 else:
-                    # PRODUCTIVE / LEGACY: never penalized
-                    if raw_eligible is None:
-                        variant_categories[v] = "LEGACY"
-                    else:
-                        variant_categories[v] = "PRODUCTIVE"
+                    # PRODUCTIVE: never penalized
+                    variant_categories[v] = "PRODUCTIVE"
 
                     if age_days > 30.0:
                         explore_queue.append(v)

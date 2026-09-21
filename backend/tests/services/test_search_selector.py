@@ -137,13 +137,9 @@ def test_select_next_search_does_not_swallow_arbitrary_integrity_error(monkeypat
         select_next_search(MockSession())
 
 
-def test_clean_abandoned_claims_ignores_started_state():
+def test_clean_abandoned_claims_reclaims_started_state():
     """
-    Proves that _clean_abandoned_claims only reclaims 'selected' claims
-    and explicitly ignores 'started' claims, preserving the known 005.7 limitation:
-    A catastrophic failure after selected -> started may leave the execution in started.
-    The current abandonment cleanup only reclaims stale selected claims.
-    Recovery/reclamation of stale started executions is deferred to a future milestone.
+    Proves that _clean_abandoned_claims reclaims 'started' claims that have become stale.
     """
     from app.db.database import SessionLocal
     from app.db.models.search_execution import SearchExecutionModel
@@ -168,10 +164,10 @@ def test_clean_abandoned_claims_ignores_started_state():
 
         # Assert
         db.refresh(c)
-        # It should still be 'started'
-        assert c.status == "started"
-        # And it shouldn't have been affected by cleanup
-        assert rows_affected == 0
+        # It should now be reclaimed to 'failed'
+        assert c.status == "failed"
+        assert c.error_message == "abandoned claim"
+        assert rows_affected >= 1
 
     finally:
         db.rollback()

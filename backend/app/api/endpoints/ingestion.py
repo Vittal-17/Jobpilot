@@ -186,8 +186,8 @@ def internal_execute_search(intent: CanonicalSearchIntent, db: Session = Depends
             jobs_fresher_eligible = 0
             recommendations_created = 0
 
-            if job_ids:
-                try:
+            try:
+                if job_ids:
                     from app.db.models.user_search import UserSearch
                     from app.db.models.user_profile import UserProfile
                     from app.schemas.match import RecommendationPreferences
@@ -253,18 +253,18 @@ def internal_execute_search(intent: CanonicalSearchIntent, db: Session = Depends
                                 if res.scalar() is not None:
                                     recommendations_created += 1
 
-                    # Persist execution quality telemetry atomically with recommendations
-                    from sqlalchemy import text
-                    db.execute(text("""
-                        UPDATE search_execution
-                        SET jobs_fresher_eligible = :elig, recommendations_created = :recs
-                        WHERE id = :eid
-                    """), {"elig": jobs_fresher_eligible, "recs": recommendations_created, "eid": intent.execution_id})
-                    db.commit()
-                except Exception as e:
-                    db.rollback()
-                    logger.exception("Failed to process recommendations and quality telemetry")
-                    raise HTTPException(status_code=500, detail="Failed to process recommendations and telemetry")
+                # Persist execution quality telemetry atomically with recommendations
+                from sqlalchemy import text
+                db.execute(text("""
+                    UPDATE search_execution
+                    SET jobs_fresher_eligible = :elig, recommendations_created = :recs
+                    WHERE id = :eid
+                """), {"elig": jobs_fresher_eligible, "recs": recommendations_created, "eid": intent.execution_id})
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                logger.exception("Failed to process recommendations and quality telemetry")
+                raise HTTPException(status_code=500, detail="Failed to process recommendations and telemetry")
 
         return result
     except RateLimitExceeded:
