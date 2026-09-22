@@ -13,6 +13,9 @@ networks:
   backend:
     name: jobpilot_backend
     driver: bridge
+  enrichment_backend:
+    name: jobpilot_enrichment_backend
+    driver: bridge
 
 volumes:
   postgres_data:
@@ -162,6 +165,7 @@ services:
       - postgres_data:/var/lib/postgresql/data
     networks:
       - backend
+      - enrichment_backend
     logging: *default-logging
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
@@ -240,3 +244,27 @@ services:
       db-setup:
         condition: service_completed_successfully
     command: ["alembic", "upgrade", "head"]
+
+  enrichment_worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.production
+      args:
+        APP_COMMIT_SHA: ${APP_COMMIT_SHA:?APP_COMMIT_SHA must be set to an exact Git SHA}
+    image: ghcr.io/vittal-17/jobpilot-fastapi:${APP_COMMIT_SHA:?APP_COMMIT_SHA must be set to an exact Git SHA}
+    restart: unless-stopped
+    environment:
+      - ENVIRONMENT=production
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:?POSTGRES_USER must be set}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      - POSTGRES_DB=${POSTGRES_DB:?POSTGRES_DB must be set}
+      - API_SECRET_KEY=${API_SECRET_KEY:?API_SECRET_KEY must be set}
+    networks:
+      - enrichment_backend
+    depends_on:
+      db:
+        condition: service_healthy
+    logging: *default-logging
+    command: ["python", "-m", "app.cli", "enrichment-worker"]

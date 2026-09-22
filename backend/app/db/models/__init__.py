@@ -1,4 +1,5 @@
 from .job import JobModel
+from .job_enrichment import JobEnrichmentModel
 from .provider_usage import ProviderUsageModel
 from .provider_state import ProviderStateModel
 from .provider_minute_usage import ProviderMinuteUsageModel
@@ -15,6 +16,7 @@ from .notification_delivery import NotificationDeliveryModel
 
 __all__ = [
     "JobModel",
+    "JobEnrichmentModel",
     "ProviderUsageModel",
     "ProviderStateModel",
     "ProviderMinuteUsageModel",

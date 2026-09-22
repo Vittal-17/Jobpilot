@@ -1,8 +1,10 @@
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from app.models.job import Job as PydanticJob
 from app.db.models.job import JobModel
 from app.db.models.job_source import JobSourceModel
+from app.db.models.job_enrichment import JobEnrichmentModel
 import hashlib
 import re
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
@@ -74,6 +76,15 @@ def _add_job_source(db: Session, job_id: int, source: str, source_job_id: str, u
         db.add(js)
         db.flush()
 
+def enqueue_job_enrichment(db: Session, job_id: int, url: str) -> None:
+    stmt = pg_insert(JobEnrichmentModel).values(
+        job_id=job_id,
+        status='pending',
+        url=url
+    ).on_conflict_do_nothing(index_elements=['job_id'])
+    db.execute(stmt)
+    db.flush()
+
 def save_job(db: Session, job: PydanticJob) -> tuple[JobModel, bool]:
     # 1. Provider-ID precedence first
     existing_source = db.query(JobSourceModel).filter(JobSourceModel.source == job.source, JobSourceModel.source_job_id == job.source_job_id).first()
@@ -116,6 +127,9 @@ def save_job(db: Session, job: PydanticJob) -> tuple[JobModel, bool]:
         with db.begin_nested():
             db.add(db_job)
             db.flush()
+            _add_job_source(db, db_job.id, job.source, job.source_job_id, str(job.url) if job.url else None)
+            if job.description_is_snippet and job.url:
+                enqueue_job_enrichment(db, db_job.id, str(job.url))
     except IntegrityError as e:
         # Concurrent collision recovery
         if canonical_hash and "canonical_hash" in str(e.orig):
@@ -133,8 +147,6 @@ def save_job(db: Session, job: PydanticJob) -> tuple[JobModel, bool]:
                 return existing, False
 
         raise
-
-    _add_job_source(db, db_job.id, job.source, job.source_job_id, str(job.url) if job.url else None)
 
     return db_job, True
 
