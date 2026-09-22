@@ -27,19 +27,47 @@
       {
         "parameters": {
           "method": "POST",
+          "url": "http://fastapi:8000/ingestion/internal/notifications/recover-stale",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "httpHeaderAuth",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={ \"stale_minutes\": 30 }"
+        },
+        "id": "node-recover-stale",
+        "name": "Recover Stale Claims",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.1,
+        "position": [
+          250,
+          300
+        ],
+        "credentials": {
+          "httpHeaderAuth": {
+            "id": "T0w0H2O4M9E6W4T6",
+            "name": "JP - FastAPI Internal API"
+          }
+        },
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 2000
+      },
+      {
+        "parameters": {
+          "method": "POST",
           "url": "http://fastapi:8000/ingestion/internal/notifications/claim",
           "authentication": "predefinedCredentialType",
           "nodeCredentialType": "httpHeaderAuth",
           "sendBody": true,
           "specifyBody": "json",
-          "jsonBody": "={ \"user_id\": 1, \"delivery_id\": \"{{ $execution.id }}\", \"limit\": 5 }"
+          "jsonBody": "={ \"delivery_id\": \"{{ $execution.id }}\", \"limit\": 5 }"
         },
         "id": "node-claim",
         "name": "Claim Notifications",
         "type": "n8n-nodes-base.httpRequest",
         "typeVersion": 4.1,
         "position": [
-          300,
+          400,
           300
         ],
         "credentials": {
@@ -99,8 +127,68 @@
       },
       {
         "parameters": {
+          "method": "POST",
+          "url": "http://fastapi:8000/ingestion/internal/notifications/send-start",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "httpHeaderAuth",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={ \"user_id\": {{ $('Claim Notifications').item.json.user_id }}, \"delivery_id\": \"{{ $('Claim Notifications').item.json.delivery_id }}\" }"
+        },
+        "id": "node-send-start",
+        "name": "Mark Send Started",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.1,
+        "position": [
+          900,
+          200
+        ],
+        "credentials": {
+          "httpHeaderAuth": {
+            "id": "T0w0H2O4M9E6W4T6",
+            "name": "JP - FastAPI Internal API"
+          }
+        },
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 2000
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "typeValidation": "strict",
+              "version": 2,
+              "leftValue": ""
+            },
+            "conditions": [
+              {
+                "id": "e4f8b056-b8a7-47be-bdf1-30ec8b88d3d9",
+                "leftValue": "={{ $json.authorized }}",
+                "rightValue": true,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "equals"
+                }
+              }
+            ],
+            "combinator": "and"
+          }
+        },
+        "id": "node-check-send-authorized",
+        "name": "Check Send Authorized",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2.2,
+        "position": [
+          1050,
+          200
+        ]
+      },
+      {
+        "parameters": {
           "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
-          "text": "={{ $json.message }}",
+          "text": "={{ $('Format Payload').item.json.message }}",
           "additionalFields": {
             "parse_mode": "HTML"
           }
@@ -110,7 +198,7 @@
         "type": "n8n-nodes-base.telegram",
         "typeVersion": 1,
         "position": [
-          900,
+          1100,
           200
         ],
         "credentials": {
@@ -118,7 +206,8 @@
             "id": "telegram_bot",
             "name": "Telegram Bot"
           }
-        }
+        },
+        "onError": "continueErrorOutput"
       },
       {
         "parameters": {
@@ -135,7 +224,7 @@
         "type": "n8n-nodes-base.httpRequest",
         "typeVersion": 4.1,
         "position": [
-          1100,
+          1300,
           200
         ],
         "credentials": {
@@ -157,13 +246,65 @@
         "type": "n8n-nodes-base.code",
         "typeVersion": 2,
         "position": [
-          1300,
+          1500,
           200
         ]
+      },
+      {
+        "parameters": {
+          "jsCode": "const item = $input.first().json;\nconst err = item.error || {};\nconst httpCode = String(err.httpCode || err.statusCode || \"\");\nconst msg = String(err.message || item.message || \"\");\nconst isDefinitive = (httpCode === \"400\" || httpCode === \"403\" || msg.includes(\"400\") || msg.includes(\"403\") || msg.includes(\"Bad Request\") || msg.includes(\"Forbidden\") || msg.includes(\"bot was blocked\"));\nif (!isDefinitive) {\n  return [];\n}\nreturn [{ json: { definitive: true, reason: msg || \"Telegram definitive send rejection\" } }];"
+        },
+        "id": "node-definitive-check",
+        "name": "Definitive Failure Check",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1300,
+          350
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "http://fastapi:8000/ingestion/internal/notifications/fail",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "httpHeaderAuth",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={ \"user_id\": {{ $('Claim Notifications').item.json.user_id }}, \"delivery_id\": \"{{ $('Claim Notifications').item.json.delivery_id }}\", \"reason\": \"{{ $json.reason || 'Telegram definitive send rejection' }}\", \"definitive\": true }"
+        },
+        "id": "node-fail-delivery",
+        "name": "Fail Delivery",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.1,
+        "position": [
+          1500,
+          350
+        ],
+        "credentials": {
+          "httpHeaderAuth": {
+            "id": "T0w0H2O4M9E6W4T6",
+            "name": "JP - FastAPI Internal API"
+          }
+        },
+        "retryOnFail": true,
+        "maxTries": 3,
+        "waitBetweenTries": 2000
       }
     ],
     "connections": {
       "Schedule": {
+        "main": [
+          [
+            {
+              "node": "Recover Stale Claims",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Recover Stale Claims": {
         "main": [
           [
             {
@@ -201,11 +342,34 @@
         "main": [
           [
             {
-              "node": "Send Telegram",
+              "node": "Mark Send Started",
               "type": "main",
               "index": 0
             }
           ]
+        ]
+      },
+      "Mark Send Started": {
+        "main": [
+          [
+            {
+              "node": "Check Send Authorized",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Check Send Authorized": {
+        "main": [
+          [
+            {
+              "node": "Send Telegram",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          []
         ]
       },
       "Send Telegram": {
@@ -216,7 +380,30 @@
               "type": "main",
               "index": 0
             }
+          ],
+          [
+            {
+              "node": "Definitive Failure Check",
+              "type": "main",
+              "index": 0
+            }
           ]
+        ]
+      },
+      "Definitive Failure Check": {
+        "main": [
+          [
+            {
+              "node": "Fail Delivery",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Fail Delivery": {
+        "main": [
+          []
         ]
       },
       "Acknowledge Delivery": {

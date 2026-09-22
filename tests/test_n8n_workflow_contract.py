@@ -53,16 +53,46 @@ def test_notifications_workflow_contract():
     nodes = {node["name"]: node for node in workflow["nodes"]}
 
     assert "Schedule" in nodes
+    assert "Recover Stale Claims" in nodes
     assert "Claim Notifications" in nodes
     assert "Check If Empty" in nodes
     assert "Format Payload" in nodes
+    assert "Mark Send Started" in nodes
+    assert "Check Send Authorized" in nodes
     assert "Send Telegram" in nodes
     assert "Acknowledge Delivery" in nodes
+    assert "Verify Acknowledgement" in nodes
+    assert "Definitive Failure Check" in nodes
+    assert "Fail Delivery" in nodes
+
+    recover = nodes["Recover Stale Claims"]
+    assert recover["parameters"]["url"].endswith("/ingestion/internal/notifications/recover-stale")
+    assert recover.get("retryOnFail") is True
+    assert recover.get("maxTries") == 3
+    assert recover.get("waitBetweenTries") == 2000
+    assert "stale_minutes" in recover["parameters"]["jsonBody"]
 
     claim = nodes["Claim Notifications"]
     assert claim["parameters"]["url"].endswith("/ingestion/internal/notifications/claim")
     assert "delivery_id" in claim["parameters"]["jsonBody"]
     assert "$execution.id" in claim["parameters"]["jsonBody"]
+    assert "user_id" not in claim["parameters"]["jsonBody"], "Claim Notifications must not hardcode user_id"
+
+    send_start = nodes["Mark Send Started"]
+    assert send_start["parameters"]["url"].endswith("/ingestion/internal/notifications/send-start")
+    assert "delivery_id" in send_start["parameters"]["jsonBody"]
+    assert "user_id" in send_start["parameters"]["jsonBody"]
+    assert "Claim Notifications" in send_start["parameters"]["jsonBody"]
+    assert send_start.get("retryOnFail") is True
+
+    telegram = nodes["Send Telegram"]
+    assert telegram.get("retryOnFail") is not True
+    assert telegram.get("onError") == "continueErrorOutput"
+
+    fail_node = nodes["Fail Delivery"]
+    assert fail_node["parameters"]["url"].endswith("/ingestion/internal/notifications/fail")
+    assert "definitive" in fail_node["parameters"]["jsonBody"]
+    assert "Claim Notifications" in fail_node["parameters"]["jsonBody"]
 
     ack = nodes["Acknowledge Delivery"]
     assert ack["parameters"]["url"].endswith("/ingestion/internal/notifications/acknowledge")
@@ -92,10 +122,13 @@ def test_notifications_workflow_contract():
 
     # Failure-path connectivity: ensure errors halt the workflow and never leak to the next node
     assert claim.get("continueOnFail") is not True
+    assert nodes["Mark Send Started"].get("continueOnFail") is not True
+    assert nodes["Mark Send Started"].get("onError") != "continueErrorOutput"
     assert nodes["Send Telegram"].get("continueOnFail") is not True
     assert ack.get("continueOnFail") is not True
 
     # Retry settings improve deterministic retry behavior natively for idempotent API boundaries
+    assert recover.get("retryOnFail") is True
     assert claim.get("retryOnFail") is True
     assert ack.get("retryOnFail") is True
 
@@ -106,12 +139,19 @@ def test_notifications_workflow_contract():
 
     # Successful ordering and empty-path halting
     connections = workflow["connections"]
+    assert connections["Schedule"]["main"][0][0]["node"] == "Recover Stale Claims"
+    assert connections["Recover Stale Claims"]["main"][0][0]["node"] == "Claim Notifications"
     assert connections["Claim Notifications"]["main"][0][0]["node"] == "Check If Empty"
     assert connections["Check If Empty"]["main"][0][0]["node"] == "Format Payload"
     assert len(connections["Check If Empty"]["main"]) == 2
-    assert len(connections["Check If Empty"]["main"][1]) == 0  # false path stops
-    assert connections["Format Payload"]["main"][0][0]["node"] == "Send Telegram"
+    assert connections["Format Payload"]["main"][0][0]["node"] == "Mark Send Started"
+    assert connections["Mark Send Started"]["main"][0][0]["node"] == "Check Send Authorized"
+    assert connections["Check Send Authorized"]["main"][0][0]["node"] == "Send Telegram"
+    assert len(connections["Check Send Authorized"]["main"]) == 2
+    assert len(connections["Check Send Authorized"]["main"][1]) == 0  # unauthorized stops
     assert connections["Send Telegram"]["main"][0][0]["node"] == "Acknowledge Delivery"
+    assert connections["Send Telegram"]["main"][1][0]["node"] == "Definitive Failure Check"
+    assert connections["Definitive Failure Check"]["main"][0][0]["node"] == "Fail Delivery"
     assert connections["Acknowledge Delivery"]["main"][0][0]["node"] == "Verify Acknowledgement"
 
 def test_notifications_workflow_escaping():
@@ -196,17 +236,25 @@ def test_telegram_node_contract():
     retry_settings = t_node.get("retryOnFail", False)
     assert retry_settings is False, "Telegram node MUST NOT automatically retry to preserve at-most-once delivery"
 
-    # Verify connectivity: Claim -> Format -> Telegram -> Ack
+    # Verify connectivity: Claim -> Format -> Mark Send Started -> Telegram -> Ack
     # We trace connections from the JSON
     connections = workflow.get("connections", {})
 
-    # 'Format Payload' -> 'Send Telegram'
+    # 'Format Payload' -> 'Mark Send Started'
     format_conn = connections.get("Format Payload", {}).get("main", [])
-    assert any(c.get("node") == "Send Telegram" for c in format_conn[0]), "Format Payload must connect to Send Telegram"
+    assert any(c.get("node") == "Mark Send Started" for c in format_conn[0]), "Format Payload must connect to Mark Send Started"
 
-    # 'Send Telegram' -> 'Acknowledge Delivery'
+    # 'Mark Send Started' -> 'Check Send Authorized' -> 'Send Telegram'
+    start_conn = connections.get("Mark Send Started", {}).get("main", [])
+    assert any(c.get("node") == "Check Send Authorized" for c in start_conn[0]), "Mark Send Started must connect to Check Send Authorized"
+
+    auth_conn = connections.get("Check Send Authorized", {}).get("main", [])
+    assert any(c.get("node") == "Send Telegram" for c in auth_conn[0]), "Check Send Authorized must connect to Send Telegram"
+
+    # 'Send Telegram' -> 'Acknowledge Delivery' (main[0]) and 'Definitive Failure Check' (main[1])
     t_conn = connections.get("Send Telegram", {}).get("main", [])
     assert any(c.get("node") == "Acknowledge Delivery" for c in t_conn[0]), "Send Telegram must connect to Acknowledge Delivery"
+    assert any(c.get("node") == "Definitive Failure Check" for c in t_conn[1]), "Send Telegram error output must connect to Definitive Failure Check"
 
     # Acknowledge Delivery -> Verify Acknowledgement
     ack_conn = connections.get("Acknowledge Delivery", {}).get("main", [])
@@ -255,6 +303,49 @@ def test_notifications_workflow_condition_evaluation():
     finally:
         Path(temp_path).unlink()
 
+def test_notifications_workflow_send_authorization_routing():
+    import subprocess
+    import tempfile
+
+    workflows = json.loads(
+        Path("backend/JP___Notifications.json").read_text(encoding="utf-8")
+    )
+    workflow = workflows[0]
+    nodes = {node["name"]: node for node in workflow["nodes"]}
+    condition_def = nodes["Check Send Authorized"]["parameters"]["conditions"]["conditions"][0]
+
+    left_expression = condition_def["leftValue"].strip("=").strip("{}").strip()
+    right_value = condition_def["rightValue"]
+
+    wrapper = f"""
+    function evaluate(payload) {{
+        const $json = payload;
+        const leftValue = {left_expression};
+        return leftValue === {str(right_value).lower()};
+    }}
+
+    console.log(JSON.stringify({{
+        authorized: evaluate({{ authorized: true, send_started: true, status: "authorized" }}),
+        already_started: evaluate({{ authorized: false, send_started: false, status: "already_started" }}),
+        already_acknowledged: evaluate({{ authorized: false, send_started: false, status: "already_acknowledged" }}),
+        missing_flag: evaluate({{ send_started: true }})
+    }}));
+    """
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.js', delete=False) as f:
+        f.write(wrapper)
+        temp_path = f.name
+
+    try:
+        result = subprocess.run(["node", temp_path], capture_output=True, text=True, check=True)
+        output = json.loads(result.stdout)
+        assert output["authorized"] is True, "Check Send Authorized must evaluate to TRUE for authorized: true"
+        assert output["already_started"] is False, "Check Send Authorized must evaluate to FALSE for authorized: false (already_started)"
+        assert output["already_acknowledged"] is False, "Check Send Authorized must evaluate to FALSE for authorized: false (already_acknowledged)"
+        assert output["missing_flag"] is False, "Check Send Authorized must evaluate to FALSE when authorized flag is missing"
+    finally:
+        Path(temp_path).unlink()
+
 def test_notifications_workflow_acknowledgement_guard():
     import json, subprocess, tempfile
     from pathlib import Path
@@ -292,3 +383,88 @@ def test_notifications_workflow_acknowledgement_guard():
         assert out == "SUCCESS,ERROR", "Must succeed on true and fail on false"
     finally:
         Path(temp_path).unlink()
+
+def test_definitive_failure_filter_evaluation():
+    import json
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    workflows = json.loads(
+        Path("backend/JP___Notifications.json").read_text(encoding="utf-8")
+    )
+    workflow = workflows[0]
+    nodes = {node["name"]: node for node in workflow["nodes"]}
+    js_code = nodes["Definitive Failure Check"]["parameters"]["jsCode"]
+
+    wrapper = f"""
+    function run(errorPayload) {{
+        const $input = {{
+            first: () => ({{
+                json: errorPayload
+            }})
+        }};
+        const fn = new Function('$input', `
+            {js_code}
+        `);
+        return fn($input);
+    }}
+
+    console.log(JSON.stringify({{
+        bad_request: run({{ error: {{ httpCode: "400", message: "Bad Request: chat not found" }} }}),
+        forbidden: run({{ error: {{ httpCode: "403", message: "Forbidden: bot was blocked by the user" }} }}),
+        timeout: run({{ error: {{ httpCode: "504", message: "Gateway Timeout" }} }}),
+        network: run({{ error: {{ message: "ECONNRESET" }} }})
+    }}));
+    """
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.js', delete=False) as f:
+        f.write(wrapper)
+        temp_path = f.name
+
+    try:
+        result = subprocess.run(["node", temp_path], capture_output=True, text=True, check=True)
+        output = json.loads(result.stdout)
+        # Definitive errors return non-empty array with definitive: true
+        assert len(output["bad_request"]) == 1
+        assert output["bad_request"][0]["json"]["definitive"] is True
+        assert len(output["forbidden"]) == 1
+        assert output["forbidden"][0]["json"]["definitive"] is True
+        # Ambiguous errors return empty array to prevent release
+        assert len(output["timeout"]) == 0
+        assert len(output["network"]) == 0
+    finally:
+        Path(temp_path).unlink()
+
+def test_send_start_fails_closed_on_conflict():
+    import json
+    from pathlib import Path
+    workflows = json.loads(Path("backend/JP___Notifications.json").read_text(encoding="utf-8"))
+    workflow = workflows[0]
+    nodes = {node["name"]: node for node in workflow["nodes"]}
+    send_start = nodes["Mark Send Started"]
+
+    # Must fail closed: no continueOnFail, no continueErrorOutput bypass
+    assert send_start.get("continueOnFail") is not True, "Mark Send Started must not continue on failure"
+    assert send_start.get("onError") != "continueErrorOutput", "Mark Send Started must not route errors"
+
+    # Must have only main[0] success output connecting to Check Send Authorized
+    connections = workflow["connections"]
+    start_outputs = connections.get("Mark Send Started", {}).get("main", [])
+    assert len(start_outputs) == 1, "Mark Send Started must have exactly one output branch"
+    assert start_outputs[0][0]["node"] == "Check Send Authorized", "Mark Send Started success must connect to Check Send Authorized"
+
+    # Check Send Authorized gate configuration and routing
+    auth_node = nodes["Check Send Authorized"]
+    assert auth_node["type"] == "n8n-nodes-base.if"
+    cond = auth_node["parameters"]["conditions"]["conditions"][0]
+    assert cond["leftValue"] == "={{ $json.authorized }}"
+    assert cond["rightValue"] is True
+    assert cond["operator"]["operation"] == "equals"
+    assert cond["operator"]["type"] == "boolean"
+
+    auth_outputs = connections.get("Check Send Authorized", {}).get("main", [])
+    assert len(auth_outputs) >= 1
+    assert auth_outputs[0][0]["node"] == "Send Telegram", "Authorized output 0 must connect to Send Telegram"
+    if len(auth_outputs) > 1:
+        assert len(auth_outputs[1]) == 0, "Unauthorized output 1 must have no downstream targets (0 items sent)"

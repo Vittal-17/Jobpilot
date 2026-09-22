@@ -433,7 +433,7 @@ def select_next_search_endpoint(context: CycleContext | None = None, db: Session
         raise HTTPException(status_code=500, detail="Internal server error")
 
 class NotificationClaimRequest(BaseModel):
-    user_id: int
+    user_id: int | None = None
     delivery_id: str = Field(..., max_length=64, min_length=1)
     limit: int = Field(5, ge=1, le=50)
 
@@ -449,6 +449,17 @@ class NotificationClaimResponse(BaseModel):
     delivery_id: str
     recommendations: list[NotificationRecommendation]
 
+class NotificationSendStartRequest(BaseModel):
+    user_id: int
+    delivery_id: str = Field(..., max_length=64, min_length=1)
+
+class NotificationSendStartResponse(BaseModel):
+    user_id: int
+    delivery_id: str
+    authorized: bool
+    send_started: bool
+    status: str
+
 class NotificationAcknowledgeRequest(BaseModel):
     user_id: int
     delivery_id: str = Field(..., max_length=64, min_length=1)
@@ -458,20 +469,100 @@ class NotificationAcknowledgeResponse(BaseModel):
     delivery_id: str
     acknowledged: bool
 
+class NotificationFailRequest(BaseModel):
+    user_id: int
+    delivery_id: str = Field(..., max_length=64, min_length=1)
+    reason: str = Field(..., min_length=1)
+    definitive: bool = Field(False, description="Set True only for definitive send rejection")
+
+class NotificationFailResponse(BaseModel):
+    user_id: int
+    delivery_id: str
+    released: bool
+    detail: str
+
+class NotificationRecoverStaleRequest(BaseModel):
+    stale_minutes: int = Field(30, ge=1, le=1440)
+
+class NotificationRecoverStaleResponse(BaseModel):
+    recovered_deliveries: int
+    released_recommendations: int
+
+def recover_stale_pre_send_claims(db: Session, stale_minutes: int = 30) -> tuple[int, int]:
+    stale_deliveries = db.execute(
+        text("""
+        SELECT delivery_id FROM notification_deliveries
+        WHERE send_started_at IS NULL
+          AND notified_at IS NULL
+          AND claimed_at <= clock_timestamp() - (:stale_minutes || ' minutes')::INTERVAL
+        FOR UPDATE SKIP LOCKED
+        """),
+        {"stale_minutes": stale_minutes}
+    ).scalars().all()
+
+    if not stale_deliveries:
+        return 0, 0
+
+    released_count = db.execute(
+        text("""
+        UPDATE recommendation_history
+        SET delivery_id = NULL
+        WHERE delivery_id = ANY(:deliv_ids)
+        """),
+        {"deliv_ids": stale_deliveries}
+    ).rowcount
+
+    deleted_count = db.execute(
+        text("""
+        DELETE FROM notification_deliveries
+        WHERE delivery_id = ANY(:deliv_ids)
+        """),
+        {"deliv_ids": stale_deliveries}
+    ).rowcount
+
+    return deleted_count, released_count
+
 @router.post("/internal/notifications/claim", response_model=NotificationClaimResponse, dependencies=[Depends(verify_api_key)])
 def claim_notifications(req: NotificationClaimRequest, db: Session = Depends(get_db)):
     try:
         from sqlalchemy.exc import IntegrityError
 
-        # 1. Try to record the delivery intent first
+        # 1. Resolve intended active user
+        target_user_id = req.user_id
+        if target_user_id is not None:
+            user_exists = db.execute(
+                text("SELECT 1 FROM users WHERE id = :user_id AND is_active = true"),
+                {"user_id": target_user_id}
+            ).scalar()
+            if not user_exists:
+                raise HTTPException(status_code=404, detail="Active user not found")
+        else:
+            target_user_id = db.execute(text("""
+                SELECT u.id
+                FROM users u
+                JOIN recommendation_history r ON r.user_id = u.id
+                WHERE u.is_active = true AND r.delivery_id IS NULL
+                ORDER BY r.recommended_at ASC
+                LIMIT 1
+            """)).scalar()
+            if target_user_id is None:
+                target_user_id = db.execute(text("SELECT id FROM users WHERE is_active = true ORDER BY id ASC LIMIT 1")).scalar()
+            if target_user_id is None:
+                return NotificationClaimResponse(
+                    user_id=0,
+                    delivery_id=req.delivery_id,
+                    recommendations=[]
+                )
+
+        # 2. Try to record delivery intent
         try:
             with db.begin_nested():
                 db.execute(
                     text("INSERT INTO notification_deliveries (delivery_id, user_id, claimed_at) VALUES (:delivery_id, :user_id, CURRENT_TIMESTAMP)"),
-                    {"delivery_id": req.delivery_id, "user_id": req.user_id}
+                    {"delivery_id": req.delivery_id, "user_id": target_user_id}
                 )
 
-                # 2. Race-safe claim using UPDATE ... WHERE id IN (...)
+                # Race-safe claim using UPDATE ... WHERE id IN (...)
                 claimed = db.execute(
                     text("""
                     WITH claim AS (
@@ -487,20 +578,20 @@ def claim_notifications(req: NotificationClaimRequest, db: Session = Depends(get
                     WHERE r.id = claim.id
                     RETURNING r.job_id
                     """),
-                    {"user_id": req.user_id, "delivery_id": req.delivery_id, "limit": req.limit}
+                    {"user_id": target_user_id, "delivery_id": req.delivery_id, "limit": req.limit}
                 ).scalars().all()
         except IntegrityError:
-            # 3. Idempotency: The delivery_id already exists.
-            # We must verify it belongs to THIS user to prevent silent cross-user collisions.
-            db.rollback()
+            # Idempotency: The delivery_id already exists.
             owner = db.execute(
                 text("SELECT user_id FROM notification_deliveries WHERE delivery_id = :delivery_id"),
                 {"delivery_id": req.delivery_id}
             ).scalar()
-            if owner is not None and owner != req.user_id:
+            if owner is not None and req.user_id is not None and owner != req.user_id:
                 raise HTTPException(status_code=409, detail="delivery_id conflict")
+            if owner is not None:
+                target_user_id = owner
 
-        # Fetch jobs assigned to this delivery_id (whether newly claimed or previously claimed)
+        # Fetch jobs assigned to this delivery_id
         jobs = db.execute(
             text("""
             SELECT j.id as job_id, j.title, j.company, j.location, j.url
@@ -509,12 +600,12 @@ def claim_notifications(req: NotificationClaimRequest, db: Session = Depends(get
             WHERE r.user_id = :user_id AND r.delivery_id = :delivery_id
             ORDER BY r.recommended_at ASC
             """),
-            {"user_id": req.user_id, "delivery_id": req.delivery_id}
+            {"user_id": target_user_id, "delivery_id": req.delivery_id}
         ).mappings().all()
 
         db.commit()
         return NotificationClaimResponse(
-            user_id=req.user_id,
+            user_id=target_user_id,
             delivery_id=req.delivery_id,
             recommendations=[NotificationRecommendation(**j) for j in jobs]
         )
@@ -527,15 +618,179 @@ def claim_notifications(req: NotificationClaimRequest, db: Session = Depends(get
         logging.getLogger(__name__).exception("Failed to claim notifications")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+@router.post("/internal/notifications/send-start", response_model=NotificationSendStartResponse, dependencies=[Depends(verify_api_key)])
+def start_notification_send(req: NotificationSendStartRequest, db: Session = Depends(get_db)):
+    try:
+        delivery = db.execute(
+            text("""
+            SELECT user_id, send_started_at, notified_at
+            FROM notification_deliveries
+            WHERE delivery_id = :delivery_id
+            FOR UPDATE
+            """),
+            {"delivery_id": req.delivery_id}
+        ).mappings().first()
+        if not delivery:
+            raise HTTPException(status_code=409, detail="Delivery claim expired or reclaimed; cannot start send")
+        if delivery["user_id"] != req.user_id:
+            raise HTTPException(status_code=409, detail="delivery_id conflict")
+
+        if delivery["notified_at"] is not None:
+            return NotificationSendStartResponse(
+                user_id=req.user_id,
+                delivery_id=req.delivery_id,
+                authorized=False,
+                send_started=False,
+                status="already_acknowledged",
+            )
+
+        if delivery["send_started_at"] is not None:
+            return NotificationSendStartResponse(
+                user_id=req.user_id,
+                delivery_id=req.delivery_id,
+                authorized=False,
+                send_started=False,
+                status="already_started",
+            )
+
+        updated = db.execute(
+            text("""
+            UPDATE notification_deliveries
+            SET send_started_at = clock_timestamp()
+            WHERE delivery_id = :delivery_id
+              AND user_id = :user_id
+              AND send_started_at IS NULL
+            """),
+            {"delivery_id": req.delivery_id, "user_id": req.user_id}
+        ).rowcount
+        if updated != 1:
+            raise HTTPException(status_code=409, detail="Concurrent send-start state conflict")
+        db.commit()
+
+        return NotificationSendStartResponse(
+            user_id=req.user_id,
+            delivery_id=req.delivery_id,
+            authorized=True,
+            send_started=True,
+            status="authorized",
+        )
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        import logging
+        logging.getLogger(__name__).exception("Failed to mark send-start")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.post("/internal/notifications/fail", response_model=NotificationFailResponse, dependencies=[Depends(verify_api_key)])
+def fail_notifications(req: NotificationFailRequest, db: Session = Depends(get_db)):
+    try:
+        delivery = db.execute(
+            text("""
+            SELECT user_id, send_started_at, notified_at
+            FROM notification_deliveries
+            WHERE delivery_id = :delivery_id
+            FOR UPDATE
+            """),
+            {"delivery_id": req.delivery_id}
+        ).mappings().first()
+        if not delivery:
+            raise HTTPException(status_code=404, detail="Delivery not found")
+        if delivery["user_id"] != req.user_id:
+            raise HTTPException(status_code=409, detail="delivery_id conflict")
+
+        if delivery["notified_at"] is not None:
+            return NotificationFailResponse(
+                user_id=req.user_id,
+                delivery_id=req.delivery_id,
+                released=False,
+                detail="Delivery was already acknowledged; cannot release"
+            )
+
+        if not req.definitive:
+            return NotificationFailResponse(
+                user_id=req.user_id,
+                delivery_id=req.delivery_id,
+                released=False,
+                detail="Ambiguous failure; delivery remains claimed to prevent duplicate external messages"
+            )
+
+        # Definitive failure: safely release recommendations and delete unacknowledged intent
+        db.execute(
+            text("UPDATE recommendation_history SET delivery_id = NULL WHERE delivery_id = :delivery_id AND user_id = :user_id"),
+            {"delivery_id": req.delivery_id, "user_id": req.user_id}
+        )
+        db.execute(
+            text("DELETE FROM notification_deliveries WHERE delivery_id = :delivery_id AND user_id = :user_id"),
+            {"delivery_id": req.delivery_id, "user_id": req.user_id}
+        )
+        db.commit()
+
+        return NotificationFailResponse(
+            user_id=req.user_id,
+            delivery_id=req.delivery_id,
+            released=True,
+            detail=f"Recommendations released due to definitive send failure: {req.reason}"
+        )
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        import logging
+        logging.getLogger(__name__).exception("Failed to process notification failure")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 @router.post("/internal/notifications/acknowledge", response_model=NotificationAcknowledgeResponse, dependencies=[Depends(verify_api_key)])
 def acknowledge_notifications(req: NotificationAcknowledgeRequest, db: Session = Depends(get_db)):
     try:
-        result = db.execute(
-            text("UPDATE notification_deliveries SET notified_at = CURRENT_TIMESTAMP WHERE user_id = :user_id AND delivery_id = :delivery_id AND notified_at IS NULL"),
-            {"user_id": req.user_id, "delivery_id": req.delivery_id}
-        )
+        delivery = db.execute(
+            text("""
+            SELECT user_id, notified_at
+            FROM notification_deliveries
+            WHERE delivery_id = :delivery_id
+            FOR UPDATE
+            """),
+            {"delivery_id": req.delivery_id}
+        ).mappings().first()
+        if not delivery:
+            raise HTTPException(status_code=404, detail="Delivery not found")
+        if delivery["user_id"] != req.user_id:
+            raise HTTPException(status_code=409, detail="delivery_id conflict")
+
+        if delivery["notified_at"] is None:
+            updated = db.execute(
+                text("""
+                UPDATE notification_deliveries
+                SET notified_at = CURRENT_TIMESTAMP
+                WHERE user_id = :user_id
+                  AND delivery_id = :delivery_id
+                  AND notified_at IS NULL
+                """),
+                {"user_id": req.user_id, "delivery_id": req.delivery_id}
+            ).rowcount
+            if updated != 1:
+                raise HTTPException(status_code=409, detail="Concurrent acknowledgement conflict")
+            db.commit()
+
+        return NotificationAcknowledgeResponse(user_id=req.user_id, delivery_id=req.delivery_id, acknowledged=True)
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.post("/internal/notifications/recover-stale", response_model=NotificationRecoverStaleResponse, dependencies=[Depends(verify_api_key)])
+def recover_stale_notifications(req: NotificationRecoverStaleRequest = NotificationRecoverStaleRequest(), db: Session = Depends(get_db)):
+    try:
+        recovered_dels, released_recs = recover_stale_pre_send_claims(db, stale_minutes=req.stale_minutes)
         db.commit()
-        return NotificationAcknowledgeResponse(user_id=req.user_id, delivery_id=req.delivery_id, acknowledged=result.rowcount > 0)
+        return NotificationRecoverStaleResponse(
+            recovered_deliveries=recovered_dels,
+            released_recommendations=released_recs
+        )
     except Exception:
         db.rollback()
         raise HTTPException(status_code=500, detail="Internal server error")
