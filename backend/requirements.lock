@@ -17,6 +17,8 @@ anyio==4.15.1
     #   watchfiles
 bcrypt==5.0.0
     # via -r /backend/requirements.txt
+beautifulsoup4==4.15.0
+    # via -r /backend/requirements.txt
 certifi==2026.7.22
     # via
     #   httpcore
@@ -64,6 +66,8 @@ python-dotenv==1.2.3
     #   uvicorn
 pyyaml==6.0.3
     # via uvicorn
+soupsieve==2.9.2
+    # via beautifulsoup4
 sqlalchemy==2.0.52
     # via
     #   -r /backend/requirements.txt
