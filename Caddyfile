@@ -10,24 +10,20 @@
 	@public_webhooks {
 		path /webhook/* /webhook-test/*
 	}
-
 	handle @public_webhooks {
 		reverse_proxy n8n:5678
 	}
 
-	# --- ROLLBACK BASIC AUTH ---
-	# To rollback to Caddy's native basic auth:
-	# 1. UNCOMMENT the `handle` block below.
-	# 2. COMMENT OUT the entire `--- NEW AUTH GATEWAY ---` section (both `@auth_public` and `forward_auth` blocks).
-	# handle {
-	# 	basic_auth {
-	# 		{$CADDY_ADMIN_USER} {$CADDY_ADMIN_HASH}
-	# 	}
-	# 	reverse_proxy n8n:5678
-	# }
-	# ---------------------------
+	handle_path /api/* {
+		reverse_proxy fastapi:8000
+	}
 
-	# --- NEW AUTH GATEWAY ---
+	handle {
+		reverse_proxy frontend:80
+	}
+}
+
+n8n.{$DOMAIN} {
 	@auth_public {
 		path /login /logout
 	}
@@ -39,10 +35,6 @@
 		forward_auth auth-gateway:8080 {
 			uri /verify
 			copy_headers X-User
-			# Strip WebSocket hop-by-hop headers from the auth subrequest.
-			# Without this, a WS upgrade (e.g. /rest/push) leaks Connection,
-			# Upgrade, and Sec-WebSocket-* into the /verify probe, causing 403.
-			# The original headers remain intact on the downstream reverse_proxy.
 			header_up -Connection
 			header_up -Upgrade
 			header_up -Sec-WebSocket-Key
@@ -52,5 +44,4 @@
 		}
 		reverse_proxy n8n:5678
 	}
-	# ------------------------
 }

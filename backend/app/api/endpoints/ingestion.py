@@ -238,16 +238,18 @@ def internal_execute_search(intent: CanonicalSearchIntent, db: Session = Depends
 
                                 match_res = calculate_match(job_resp, prefs)
                                 if match_res.score >= 50:
-                                    scored_jobs.append((match_res.score, job.id))
+                                    scored_jobs.append((match_res, job.id))
 
                             # Actually select the best jobs (top 5), not merely a match above a score threshold
-                            scored_jobs.sort(key=lambda x: (-x[0], x[1]))
+                            scored_jobs.sort(key=lambda x: (-x[0].score, x[1]))
                             top_jobs = scored_jobs[:5]
 
-                            for score, job_id in top_jobs:
+                            for match_res, job_id in top_jobs:
                                 stmt = insert(RecommendationHistoryModel).values(
                                     user_id=uid,
-                                    job_id=job_id
+                                    job_id=job_id,
+                                    score=match_res.score,
+                                    reasons=[r.model_dump() for r in match_res.reasons]
                                 ).on_conflict_do_nothing(
                                     index_elements=['user_id', 'job_id']
                                 ).returning(RecommendationHistoryModel.id)

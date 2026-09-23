@@ -1,5 +1,7 @@
 from typing import Optional, List
+from datetime import datetime
 from pydantic import BaseModel, Field
+from app.schemas.job import JobResponse
 
 class RecommendationPreferences(BaseModel):
     """
@@ -23,5 +25,17 @@ class MatchReason(BaseModel):
 
 class MatchResult(BaseModel):
     job_id: int
-    score: int = Field(..., ge=0, le=100)
-    reasons: List[MatchReason]
+    score: Optional[int] = Field(None, ge=0, le=100)
+    reasons: Optional[List[MatchReason]] = None
+
+class RecommendedJobResponse(BaseModel):
+    job: JobResponse
+    match: Optional[MatchResult] = None
+    recommended_at: datetime
+    delivery_status: Optional[str] = None
+
+class PaginatedRecommendedJobResponse(BaseModel):
+    items: List[RecommendedJobResponse]
+    total: int
+    page: int
+    size: int

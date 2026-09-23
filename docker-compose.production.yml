@@ -137,6 +137,7 @@ services:
       - JOOBLE_ENABLED=${JOOBLE_ENABLED:-true}
     networks:
       - backend
+      - frontend
     depends_on:
       db:
         condition: service_healthy
@@ -274,3 +275,22 @@ services:
       retries: 3
       start_period: 15s
     command: ["python", "-m", "app.cli", "enrichment-worker"]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.production
+    image: ghcr.io/vittal-17/jobpilot-frontend:${APP_COMMIT_SHA:?APP_COMMIT_SHA must be set to an exact Git SHA}
+    restart: unless-stopped
+    networks:
+      - frontend
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 128M
