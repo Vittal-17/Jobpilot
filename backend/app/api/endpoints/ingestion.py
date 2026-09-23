@@ -202,7 +202,9 @@ def internal_execute_search(intent: CanonicalSearchIntent, db: Session = Depends
 
                     # Calculate fresher eligible count uniquely for THIS execution
                     for job in jobs:
-                        if is_fresher_eligible(job.title, job.description or "", is_snippet=job.description_is_snippet):
+                        if job.description_is_snippet:
+                            continue
+                        if is_fresher_eligible(job.title, job.description or "", is_snippet=False):
                             jobs_fresher_eligible += 1
 
                     active_user_ids = db.query(UserSearch.user_id).filter(UserSearch.enabled == True).distinct().all()
@@ -228,10 +230,10 @@ def internal_execute_search(intent: CanonicalSearchIntent, db: Session = Depends
 
                             scored_jobs = []
                             for job in jobs:
-                                if job.id in existing_job_ids:
+                                if job.id in existing_job_ids or job.description_is_snippet:
                                     continue
                                 job_resp = JobResponse.model_validate(job)
-                                if not is_fresher_eligible(job_resp.title, job_resp.description or "", is_snippet=job_resp.description_is_snippet):
+                                if not is_fresher_eligible(job_resp.title, job_resp.description or "", is_snippet=False):
                                     continue
 
                                 match_res = calculate_match(job_resp, prefs)
@@ -257,7 +259,8 @@ def internal_execute_search(intent: CanonicalSearchIntent, db: Session = Depends
                 from sqlalchemy import text
                 db.execute(text("""
                     UPDATE search_execution
-                    SET jobs_fresher_eligible = :elig, recommendations_created = :recs
+                    SET jobs_fresher_eligible = COALESCE(jobs_fresher_eligible, 0) + :elig,
+                        recommendations_created = COALESCE(recommendations_created, 0) + :recs
                     WHERE id = :eid
                 """), {"elig": jobs_fresher_eligible, "recs": recommendations_created, "eid": intent.execution_id})
                 db.commit()

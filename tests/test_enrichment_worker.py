@@ -205,6 +205,45 @@ def test_enqueue_job_enrichment_conflict_safe_idempotent(db_session):
     assert enrichments[0].status == "in_progress"
     assert enrichments[0].url == "https://example.com/initial"
 
+def test_enqueue_preserves_first_discoverer_lineage(db_session):
+    """The first-discoverer contract: a deduplicated job must NOT receive a new
+    enrichment row, and a later execution must NOT steal the enrichment lineage
+    (source_execution_id) from the execution that first discovered the job."""
+    from app.db.models.search_execution import SearchExecutionModel
+    now = datetime.now(timezone.utc)
+
+    exec1 = SearchExecutionModel(id=770001, candidate_id="LIN::A", status="succeeded", selected_at=now)
+    exec2 = SearchExecutionModel(id=770002, candidate_id="LIN::B", status="succeeded", selected_at=now)
+    db_session.add_all([exec1, exec2])
+    db_session.flush()
+
+    job = JobModel(
+        title="Data Engineer",
+        company="Data Corp",
+        source="jooble",
+        source_job_id="lineage_test_770",
+        discovered_at=now,
+        description="Snippet...",
+        description_is_snippet=True,
+        url="https://example.com/lineage_job",
+    )
+    db_session.add(job)
+    db_session.flush()
+
+    # First discovery: execution 1 owns the enrichment lineage.
+    enqueue_job_enrichment(db_session, job.id, "https://example.com/first", execution_id=exec1.id)
+    enr = db_session.query(JobEnrichmentModel).filter_by(job_id=job.id).one()
+    assert enr.source_execution_id == exec1.id
+
+    # A later execution re-encounters the SAME job (dedup). on_conflict_do_nothing
+    # must leave the existing row untouched: no new row, no lineage transfer.
+    enqueue_job_enrichment(db_session, job.id, "https://example.com/second", execution_id=exec2.id)
+
+    rows = db_session.query(JobEnrichmentModel).filter_by(job_id=job.id).all()
+    assert len(rows) == 1, "Deduplicated job must not receive a second enrichment row"
+    assert rows[0].source_execution_id == exec1.id, "Enrichment lineage must stay with the first discoverer"
+    assert rows[0].url == "https://example.com/first", "Existing enrichment row must not be overwritten"
+
 def test_enrichment_worker_populates_lease_holder(db_session):
     job = JobModel(
         title="Platform Engineer",

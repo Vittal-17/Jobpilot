@@ -10,6 +10,7 @@ class JobEnrichmentModel(Base):
 
     job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), primary_key=True)
     status: Mapped[str] = mapped_column(String(50), nullable=False, server_default='pending')
+    source_execution_id: Mapped[int | None] = mapped_column(ForeignKey("search_execution.id", ondelete="SET NULL"), nullable=True)
     url: Mapped[str] = mapped_column(Text, nullable=False)
 
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default='0')

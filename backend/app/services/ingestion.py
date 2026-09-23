@@ -249,7 +249,7 @@ def run_ingestion(db: Session, provider_name: str, provider: JobProvider, query:
 
         try:
             with db.begin_nested():
-                db_job, created = save_job(db, job)
+                db_job, created = save_job(db, job, execution_id=execution_id)
                 job_ids.append(db_job.id)
             if created:
                 result.created += 1

@@ -63,7 +63,7 @@ class EnrichmentWorker:
                 attempts = CASE WHEN e.status = 'in_progress' THEN e.attempts + 1 ELSE e.attempts END
             FROM claimed c
             WHERE e.job_id = c.job_id
-            RETURNING e.job_id, e.url;
+            RETURNING e.job_id, e.url, e.source_execution_id;
         ''')
 
         new_token = str(uuid.uuid4())
@@ -83,17 +83,17 @@ class EnrichmentWorker:
             return
 
         for row in claimed:
-            job_id, url = row
-            self.process_job(db, job_id, url, new_token)
+            job_id, url, source_execution_id = row
+            self.process_job(db, job_id, url, new_token, source_execution_id)
 
-    def process_job(self, db: Session, job_id: int, url: str, token: str):
+    def process_job(self, db: Session, job_id: int, url: str, token: str, source_execution_id: int | None = None):
         try:
             response = self.ssrf_client.fetch(url)
             response.raise_for_status()
 
             full_text = extract_job_description(response.text)
 
-            self.complete_success(db, job_id, token, full_text)
+            self.complete_success(db, job_id, token, full_text, source_execution_id)
 
         except SSRFViolation as e:
             self.complete_failure(db, job_id, token, str(e), unsupported=True)
@@ -103,7 +103,7 @@ class EnrichmentWorker:
             print(f"Exception in process_job: {e}")
             self.complete_failure(db, job_id, token, str(e))
 
-    def complete_success(self, db: Session, job_id: int, token: str, new_desc: str):
+    def complete_success(self, db: Session, job_id: int, token: str, new_desc: str, source_execution_id: int | None = None):
         try:
             with db.begin_nested():
                 update_enrichment_q = text("""
@@ -134,6 +134,7 @@ class EnrichmentWorker:
                 )
 
                 if is_eligible:
+                    new_recs = 0
                     job_resp = JobResponse.model_validate(job)
 
                     # Score for all active users
@@ -150,11 +151,21 @@ class EnrichmentWorker:
 
                         match_res = calculate_match(job_resp, prefs)
                         if match_res.score >= 50:
-                            db.execute(text("""
+                            res = db.execute(text("""
                                 INSERT INTO recommendation_history (user_id, job_id, recommended_at)
                                 VALUES (:user_id, :job_id, CURRENT_TIMESTAMP)
                                 ON CONFLICT (user_id, job_id) DO NOTHING
+                                RETURNING id
                             """), {"user_id": uid, "job_id": job.id})
+                            if res.scalar() is not None:
+                                new_recs += 1
+                    if source_execution_id:
+                        db.execute(text("""
+                            UPDATE search_execution
+                            SET jobs_fresher_eligible = COALESCE(jobs_fresher_eligible, 0) + 1,
+                                recommendations_created = COALESCE(recommendations_created, 0) + :recs
+                            WHERE id = :eid AND status NOT IN ('failed', 'abandoned')
+                        """), {"recs": new_recs, "eid": source_execution_id})
                 else:
                     db.execute(text("""
                         DELETE FROM recommendation_history

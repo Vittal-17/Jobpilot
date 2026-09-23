@@ -33,8 +33,8 @@ def test_execution_scoped_quality_counts(db_session, monkeypatch):
         db_session.commit()
 
         # Insert historical jobs (e.g. from Execution A)
-        job_a1 = JobModel(id=1, title="Senior Data Engineer", company="A", source="test", source_job_id="A1", discovered_at=datetime.now(timezone.utc))
-        job_a2 = JobModel(id=2, title="Data Engineer", company="A", source="test", source_job_id="A2", discovered_at=datetime.now(timezone.utc))
+        job_a1 = JobModel(description_is_snippet=False, id=1, title="Senior Data Engineer", company="A", source="test", source_job_id="A1", discovered_at=datetime.now(timezone.utc))
+        job_a2 = JobModel(description_is_snippet=False, id=2, title="Data Engineer", company="A", source="test", source_job_id="A2", discovered_at=datetime.now(timezone.utc))
         db_session.add_all([job_a1, job_a2])
         db_session.commit()
 
@@ -74,9 +74,9 @@ def test_execution_scoped_quality_counts(db_session, monkeypatch):
         assert claim_a.recommendations_created == 0
 
         # Now Execution B
-        job_b1 = JobModel(id=3, title="Junior Data Engineer", description="0-1 years", company="B", source="test", source_job_id="B1", discovered_at=datetime.now(timezone.utc))
-        job_b2 = JobModel(id=4, title="Data Engineer Fresher", company="B", source="test", source_job_id="B2", discovered_at=datetime.now(timezone.utc))
-        job_b3 = JobModel(id=5, title="Senior Data Engineer", company="B", source="test", source_job_id="B3", discovered_at=datetime.now(timezone.utc))
+        job_b1 = JobModel(description_is_snippet=False, id=3, title="Junior Data Engineer", description="0-1 years", company="B", source="test", source_job_id="B1", discovered_at=datetime.now(timezone.utc))
+        job_b2 = JobModel(description_is_snippet=False, id=4, title="Data Engineer Fresher", company="B", source="test", source_job_id="B2", discovered_at=datetime.now(timezone.utc))
+        job_b3 = JobModel(description_is_snippet=False, id=5, title="Senior Data Engineer", company="B", source="test", source_job_id="B3", discovered_at=datetime.now(timezone.utc))
         db_session.add_all([job_b1, job_b2, job_b3])
         db_session.commit()
 
