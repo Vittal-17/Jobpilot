@@ -19,6 +19,7 @@ class JobModel(Base):
     remote: Mapped[bool | None] = mapped_column(Boolean)
     employment_type: Mapped[str | None] = mapped_column(String(100))
     description: Mapped[str | None] = mapped_column(Text)
+    description_is_snippet: Mapped[bool] = mapped_column(Boolean, default=True, server_default='true', nullable=False)
 
     salary_min: Mapped[int | None] = mapped_column(Integer)
     salary_max: Mapped[int | None] = mapped_column(Integer)

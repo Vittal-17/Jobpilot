@@ -98,6 +98,7 @@ class JoobleProvider(JobProvider):
                     discovered_at=datetime.now(timezone.utc),
                     location=item.get("location"),
                     description=item.get("snippet"),
+                    description_is_snippet=True,
                     employment_type=item.get("type"),
                     url=item.get("link"),
                     published_at=pub_date

@@ -227,7 +227,7 @@ def test_taxonomy_search_generates_recommendations(db_session, monkeypatch):
         claim.completed_at = db.scalar(text("SELECT CURRENT_TIMESTAMP"))
 
         # Create a job that perfectly matches the user profile
-        job = JobModel(
+        job = JobModel(description_is_snippet=False,
             title="Python Developer Fresher", company="DeepMind", source="adzuna",
             source_job_id="tax_job_1", canonical_hash="hash_tax_1",
             discovered_at=datetime.now(timezone.utc)

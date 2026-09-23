@@ -109,51 +109,51 @@ def test_geographic_rejection_taxonomy_aware(db_session, monkeypatch):
     class TestProvider(JobProvider):
         def search_jobs(self, q):
             return [
-                Job(
+                Job(description_is_snippet=False,
                     title="Dev", company="C1", source="t", source_job_id="1", discovered_at=datetime.now(timezone.utc),
                     location="Electronic City Phase 1, Bangalore", description="1"
                 ),
-                Job(
+                Job(description_is_snippet=False,
                     title="Dev", company="C2", source="t", source_job_id="2", discovered_at=datetime.now(timezone.utc),
                     location="Las Vegas, NV", description="2"
                 ),
-                Job(
+                Job(description_is_snippet=False,
                     title="Dev", company="C3", source="t", source_job_id="3", discovered_at=datetime.now(timezone.utc),
                     location="ITPL, Bangalore", description="3"  # ITPL is related area of Whitefield (LOC-BLR-002)
                 ),
-                Job(
+                Job(description_is_snippet=False,
                     title="Dev", company="C4", source="t", source_job_id="4", discovered_at=datetime.now(timezone.utc),
                     location="Remote (Anywhere)", description="4", remote=True
                 ),
-                Job(
+                Job(description_is_snippet=False,
                     title="Dev", company="C5", source="t", source_job_id="5", discovered_at=datetime.now(timezone.utc),
                     location="Indianapolis, IN", description="5" # Should not match "India"
                 ),
-                Job(
+                Job(description_is_snippet=False,
                     title="Dev", company="C6", source="t", source_job_id="6", discovered_at=datetime.now(timezone.utc),
                     location="Hyderabad, Telangana", description="6"
                 ),
-                Job(
+                Job(description_is_snippet=False,
                     title="Dev", company="C7", source="t", source_job_id="7", discovered_at=datetime.now(timezone.utc),
                     location="Pune, Maharashtra", description="7"
                 ),
-                Job(
+                Job(description_is_snippet=False,
                     title="Dev", company="C8", source="t", source_job_id="8", discovered_at=datetime.now(timezone.utc),
                     location="Mumbai, India", description="8"
                 ),
-                Job(
+                Job(description_is_snippet=False,
                     title="Dev", company="C9", source="t", source_job_id="9", discovered_at=datetime.now(timezone.utc),
                     location="Chennai", description="9"
                 ),
-                Job(
+                Job(description_is_snippet=False,
                     title="Dev", company="C10", source="t", source_job_id="10", discovered_at=datetime.now(timezone.utc),
                     location="India", description="10" # Broad India
                 ),
-                Job(
+                Job(description_is_snippet=False,
                     title="Dev", company="C11", source="t", source_job_id="11", discovered_at=datetime.now(timezone.utc),
                     location="Karnataka, India", description="11" # Broad Karnataka
                 ),
-                Job(
+                Job(description_is_snippet=False,
                     title="Dev", company="C12", source="t", source_job_id="12", discovered_at=datetime.now(timezone.utc),
                     location="Bengaluru, Karnataka, India", description="12" # Valid full string
                 )
@@ -202,7 +202,7 @@ def test_recommendation_creation_end_to_end(db_session, monkeypatch):
     class E2EProvider(JobProvider):
         def search_jobs(self, q):
             return [
-                Job(
+                Job(description_is_snippet=False,
                     title="Junior Data Analyst", company="C", source="e2e", source_job_id="999",
                     discovered_at=datetime.now(timezone.utc), location="Bengaluru, India",
                     description="Fresher data analyst."

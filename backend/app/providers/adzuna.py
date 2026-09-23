@@ -99,6 +99,7 @@ class AdzunaProvider(JobProvider):
                     discovered_at=datetime.now(timezone.utc),
                     location=item.get("location", {}).get("display_name"),
                     description=item.get("description"),
+                    description_is_snippet=True,
                     salary_min=int(item.get("salary_min")) if item.get("salary_min") else None,
                     salary_max=int(item.get("salary_max")) if item.get("salary_max") else None,
                     url=item.get("redirect_url"),
