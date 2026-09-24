@@ -1,6 +1,7 @@
 import { useRef } from 'react';
 import { useGSAP } from '@gsap/react';
 import gsap from 'gsap';
+import { Link } from 'react-router-dom';
 import { useRecommendations } from '@/hooks/useRecommendations';
 import { useSystemStatus } from '@/hooks/useSystemStatus';
 import { formatDistanceToNow } from 'date-fns';
@@ -121,9 +122,9 @@ export function Today() {
                   {job.remote && <span className="px-2 py-1 bg-[var(--color-bg-secondary)] border border-[var(--color-border)] text-xs">Remote</span>}
                   {delivery_status === 'DELIVERED' && <span className="px-2 py-1 bg-[var(--color-bg-secondary)] border border-[var(--color-border)] text-xs">Notified</span>}
                 </div>
-                <button className="text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors">
+                <Link to={`/jobs/${job.id}`} className="text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)] transition-colors">
                   View Detail →
-                </button>
+                </Link>
               </div>
             </article>
           ))}

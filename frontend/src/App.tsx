@@ -7,6 +7,9 @@ import { Feed } from '@/pages/Feed';
 import { Search } from '@/pages/Search';
 import { System } from '@/pages/System';
 import { Settings } from '@/pages/Settings';
+import { Saved } from '@/pages/Saved';
+import { Applications } from '@/pages/Applications';
+import { JobDetail } from '@/pages/JobDetail';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -26,6 +29,9 @@ export default function App() {
           <Route path="/login" element={<Login />} />
           <Route path="/" element={<Layout><Today /></Layout>} />
           <Route path="/jobs" element={<Layout><Feed /></Layout>} />
+          <Route path="/jobs/:id" element={<Layout><JobDetail /></Layout>} />
+          <Route path="/saved" element={<Layout><Saved /></Layout>} />
+          <Route path="/applications" element={<Layout><Applications /></Layout>} />
           <Route path="/search" element={<Layout><Search /></Layout>} />
           <Route path="/system" element={<Layout><System /></Layout>} />
           <Route path="/settings" element={<Layout><Settings /></Layout>} />
