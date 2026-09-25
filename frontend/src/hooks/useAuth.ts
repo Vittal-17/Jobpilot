@@ -23,7 +23,7 @@ export function useAuth() {
     },
     onSuccess: () => {
       queryClient.clear();
-      navigate('/login');
+      navigate('/signin');
     },
   });
 

@@ -1,12 +1,27 @@
 import { useState } from 'react';
 import { useSearches } from '@/hooks/useSearches';
+import { useAuth } from '@/hooks/useAuth';
+import { Link } from 'react-router-dom';
 
 export function Search() {
+  const { user } = useAuth();
   const { searches, isLoading, isError, createSearch, deleteSearch, updateSearch, isCreating } = useSearches();
 
   const [query, setQuery] = useState('');
   const [location, setLocation] = useState('');
   const [remoteOnly, setRemoteOnly] = useState(false);
+
+  if (!user) {
+    return (
+      <div className="max-w-4xl mx-auto py-12 text-center border border-[var(--color-border)] bg-[var(--color-bg-secondary)]">
+        <h1 className="font-serif text-2xl mb-4 text-[var(--color-text-primary)]">Search Configuration</h1>
+        <p className="text-sm text-[var(--color-text-secondary)] mb-6">You must be authenticated to manage search targets.</p>
+        <Link to="/signin" className="px-6 py-2 bg-[var(--color-text-primary)] text-[var(--color-bg-primary)] text-sm hover:bg-[var(--color-text-secondary)] transition-colors">
+          Sign In
+        </Link>
+      </div>
+    );
+  }
 
   if (isLoading) {
     return <div className="max-w-4xl mx-auto animate-pulse h-32 bg-[var(--color-border)]"></div>;

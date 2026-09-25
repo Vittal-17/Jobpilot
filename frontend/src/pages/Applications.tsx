@@ -14,9 +14,16 @@ function isApplicationStatus(val: string): val is ApplicationStatus {
   return (APPLICATION_STATUSES as readonly string[]).includes(val);
 }
 
+import { useAuth } from '@/hooks/useAuth';
+import { Navigate } from 'react-router-dom';
+
 export function Applications() {
+  const { user, isLoading: authLoading } = useAuth();
   const { data: applications, isLoading, isError } = useApplications();
   const { updateApplication, isUpdating } = useUpdateApplication();
+
+  if (authLoading) return null;
+  if (!user) return <Navigate to="/signin" replace />;
 
   if (isLoading) {
     return <div className="max-w-4xl mx-auto animate-pulse h-32 bg-[var(--color-border)]"></div>;

@@ -26,7 +26,7 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
         <Routes>
-          <Route path="/login" element={<Login />} />
+          <Route path="/signin" element={<Login />} />
           <Route path="/" element={<Layout><Today /></Layout>} />
           <Route path="/jobs" element={<Layout><Feed /></Layout>} />
           <Route path="/jobs/:id" element={<Layout><JobDetail /></Layout>} />

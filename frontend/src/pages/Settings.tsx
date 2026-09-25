@@ -1,7 +1,11 @@
 import { useState, useEffect } from 'react';
 import { useProfile } from '@/hooks/useProfile';
 
+import { useAuth } from '@/hooks/useAuth';
+import { Navigate } from 'react-router-dom';
+
 export function Settings() {
+  const { user, isLoading: authLoading } = useAuth();
   const { profile, isLoading, isError, updateProfileAsync, isUpdating } = useProfile();
 
   const [headline, setHeadline] = useState('');
@@ -16,6 +20,9 @@ export function Settings() {
       setExperience(profile.experience_years?.toString() || '');
     }
   }, [profile]);
+
+  if (authLoading) return null;
+  if (!user) return <Navigate to="/signin" replace />;
 
   if (isLoading) return <div className="max-w-3xl mx-auto animate-pulse h-32 bg-[var(--color-border)]"></div>;
   if (isError) return <div className="max-w-3xl mx-auto text-[var(--color-signal-error)]">Failed to load profile.</div>;

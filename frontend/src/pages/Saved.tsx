@@ -1,9 +1,16 @@
 import { Link } from 'react-router-dom';
 import { useSavedJobs, useUnsaveJob } from '@/hooks/useSavedJobs';
 
+import { useAuth } from '@/hooks/useAuth';
+import { Navigate } from 'react-router-dom';
+
 export function Saved() {
+  const { user, isLoading: authLoading } = useAuth();
   const { data: savedJobs, isLoading, isError } = useSavedJobs();
   const { unsaveJob, isUnsaving } = useUnsaveJob();
+
+  if (authLoading) return null;
+  if (!user) return <Navigate to="/signin" replace />;
 
   if (isLoading) {
     return <div className="max-w-4xl mx-auto animate-pulse h-32 bg-[var(--color-border)]"></div>;

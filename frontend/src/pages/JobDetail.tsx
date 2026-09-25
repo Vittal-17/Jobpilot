@@ -1,4 +1,5 @@
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
+import { useAuth } from '@/hooks/useAuth';
 import { useJob } from '@/hooks/useJob';
 import { useSaveJob } from '@/hooks/useSavedJobs';
 import { useApplyJob } from '@/hooks/useApplications';
@@ -6,10 +7,22 @@ import { useApplyJob } from '@/hooks/useApplications';
 export function JobDetail() {
   const { id } = useParams<{ id: string }>();
   const jobId = id ? parseInt(id, 10) : undefined;
+  const navigate = useNavigate();
+  const { user } = useAuth();
 
   const { data: job, isLoading, isError } = useJob(jobId);
   const { saveJob, isSaving } = useSaveJob();
   const { applyJob, isApplying } = useApplyJob();
+
+  const handleSave = () => {
+    if (!user) return navigate('/signin');
+    if (jobId) saveJob(jobId);
+  };
+
+  const handleApply = () => {
+    if (!user) return navigate('/signin');
+    if (jobId) applyJob(jobId);
+  };
 
   if (isLoading) {
     return (
@@ -45,14 +58,14 @@ export function JobDetail() {
 
         <div className="flex gap-4 mt-6">
           <button
-            onClick={() => saveJob(job.id)}
+            onClick={handleSave}
             disabled={isSaving}
             className="px-4 py-2 bg-[var(--color-bg-secondary)] border border-[var(--color-border)] hover:border-[var(--color-text-primary)] text-sm transition-colors disabled:opacity-50"
           >
             {isSaving ? 'Saving...' : 'Save Job'}
           </button>
           <button
-            onClick={() => applyJob(job.id)}
+            onClick={handleApply}
             disabled={isApplying}
             className="px-4 py-2 bg-[var(--color-text-primary)] text-[var(--color-bg-primary)] hover:bg-[var(--color-text-secondary)] text-sm transition-colors disabled:opacity-50"
           >
