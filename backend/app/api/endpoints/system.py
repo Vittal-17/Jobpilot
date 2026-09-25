@@ -7,8 +7,6 @@ from datetime import datetime
 from app.db.database import get_db
 from app.db.models.job import JobModel
 from app.db.models.search_execution import SearchExecutionModel
-from app.db.models.user import User
-from app.api.deps import get_current_user
 
 router = APIRouter()
 
@@ -20,7 +18,6 @@ class SystemStatusResponse(BaseModel):
 
 @router.get("/status", response_model=SystemStatusResponse)
 def get_system_status(
-    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     # Authoritative execution health
