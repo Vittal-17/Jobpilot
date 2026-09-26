@@ -2,7 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from '@/api/client';
 import type { PaginatedUserSearchResponse, UserSearchCreate, UserSearchUpdate, UserSearchResponse } from '@/api/types';
 
-export function useSearches(page = 1, size = 50) {
+export function useSearches(page = 1, size = 50, enabled = true) {
   const queryClient = useQueryClient();
 
   const query = useQuery({
@@ -11,6 +11,7 @@ export function useSearches(page = 1, size = 50) {
       const { data } = await apiClient.get<PaginatedUserSearchResponse>('/v1/searches', { params: { page, size } });
       return data;
     },
+    enabled,
   });
 
   const createMutation = useMutation({
@@ -43,9 +44,8 @@ export function useSearches(page = 1, size = 50) {
   });
 
   return {
+    ...query,
     searches: query.data,
-    isLoading: query.isLoading,
-    isError: query.isError,
     createSearch: createMutation.mutateAsync,
     updateSearch: updateMutation.mutateAsync,
     deleteSearch: deleteMutation.mutateAsync,

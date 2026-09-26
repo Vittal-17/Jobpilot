@@ -1,48 +1,70 @@
 @import "tailwindcss";
 
 @theme {
-  --font-serif: "Playfair Display", "Newsreader", serif;
-  --font-sans: "Inter", "Space Grotesk", "Helvetica Neue", sans-serif;
+  --font-sans: "Inter", "Helvetica Neue", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
 
-  --color-bg-primary: #F4F0EA;
-  --color-bg-secondary: #EAE5DB;
-  --color-text-primary: #1C1C19;
-  --color-text-secondary: #5C5C55;
-  --color-border: #D1CDC4;
-  --color-border-strong: #1C1C19;
+  /* Foundation */
+  --cream:       #FAF7F2;
+  --sand:        #EEE7D9;
+  --stone:       #D6CCBF;
+  --stone-dark:  #A8A098;
+  --ink:         #1C1916;
+  --ink-soft:    #4A4540;
+  --ink-muted:   #78726A;
 
-  --color-signal-success: #4A5D23;
-  --color-signal-warning: #B87A3D;
-  --color-signal-error: #8A3A33;
-  --color-signal-info: #3A538B;
-
-  --border-radius-none: 0px;
-  --border-radius-sm: 0px;
-  --border-radius-DEFAULT: 0px;
+  /* Signal chromatics — all semantically meaningful */
+  --cobalt:      #1B3FCC;   /* high-confidence match, identity */
+  --cobalt-dim:  #2C52E0;
+  --cobalt-bg:   #E8EDF9;
+  --violet:      #5B14A8;   /* enrichment stage */
+  --electric:    #005BB8;   /* evaluation */
+  --mint:        #007858;   /* surface / delivery */
+  --amber:       #B06000;   /* medium match */
+  --vermillion:  #C93020;   /* error / alert */
+  --acid:        #8CA800;   /* success / remote */
 }
 
 @layer base {
+  *, *::before, *::after { box-sizing: border-box; }
   body {
-    @apply font-sans bg-[var(--color-bg-primary)] text-[var(--color-text-primary)] antialiased selection:bg-[var(--color-text-primary)] selection:text-[var(--color-bg-primary)];
+    background: var(--cream);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 16px;
+    line-height: 1.55;
     margin: 0;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
   }
-
-  h1, h2, h3, h4, h5, h6 {
-    @apply font-serif font-normal;
-  }
+  ::selection { background: var(--cobalt); color: #fff; }
 }
 
 @layer utilities {
-  .noise-overlay {
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    z-index: 50;
-    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.05'/%3E%3C/svg%3E");
-  }
+  /* Score colouring */
+  .score-high { color: var(--cobalt); }
+  .score-mid  { color: var(--amber); }
+  .score-low  { color: var(--ink-muted); }
 
-  .swiss-grid {
-    display: grid;
-    grid-template-columns: repeat(12, minmax(0, 1fr));
+  /* Signal entry hover */
+  .signal-entry {
+    border-top: 1px solid var(--stone);
+    transition: background 0.12s ease;
+    cursor: pointer;
+  }
+  .signal-entry:hover { background: var(--sand); }
+  .signal-entry:first-child { border-top: none; }
+}
+
+/* Count-up animation */
+@keyframes countUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
   }
 }

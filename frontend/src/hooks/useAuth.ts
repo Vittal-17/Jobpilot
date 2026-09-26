@@ -10,11 +10,20 @@ export function useAuth() {
   const query = useQuery({
     queryKey: ['auth', 'me'],
     queryFn: async () => {
-      const { data } = await apiClient.get<UserResponse>('/v1/me');
-      return data;
+      try {
+        const { data } = await apiClient.get<UserResponse>('/v1/me');
+        return data;
+      } catch (error: any) {
+        if (error?.response?.status === 401) {
+          return null; // Return null on 401 instead of throwing
+        }
+        throw error;
+      }
     },
-    retry: false, // Don't retry if 401
+    retry: false,
     staleTime: 5 * 60 * 1000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
   });
 
   const logoutMutation = useMutation({
@@ -22,7 +31,7 @@ export function useAuth() {
       await apiClient.post('/v1/auth/logout');
     },
     onSuccess: () => {
-      queryClient.clear();
+      queryClient.setQueryData(['auth', 'me'], null);
       navigate('/signin');
     },
   });
@@ -30,6 +39,7 @@ export function useAuth() {
   return {
     user: query.data,
     isLoading: query.isLoading,
+    isFetching: query.isFetching,
     isError: query.isError,
     logout: logoutMutation.mutate,
     isLoggingOut: logoutMutation.isPending,

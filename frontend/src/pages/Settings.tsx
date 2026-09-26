@@ -1,93 +1,116 @@
 import { useState, useEffect } from 'react';
-import { useProfile } from '@/hooks/useProfile';
-
-import { useAuth } from '@/hooks/useAuth';
 import { Navigate } from 'react-router-dom';
+import { useAuth } from '@/hooks/useAuth';
+import { useProfile } from '@/hooks/useProfile';
 
 export function Settings() {
   const { user, isLoading: authLoading } = useAuth();
   const { profile, isLoading, isError, updateProfileAsync, isUpdating } = useProfile();
-
-  const [headline, setHeadline] = useState('');
-  const [skills, setSkills] = useState('');
+  const [headline,   setHeadline]   = useState('');
+  const [skills,     setSkills]     = useState('');
   const [experience, setExperience] = useState('');
-  const [saveStatus, setSaveStatus] = useState('');
+  const [status,     setStatus]     = useState('');
 
   useEffect(() => {
     if (profile) {
-      setHeadline(profile.headline || '');
-      setSkills(profile.skills || '');
-      setExperience(profile.experience_years?.toString() || '');
+      setHeadline(profile.headline ?? '');
+      setSkills(profile.skills ?? '');
+      setExperience(profile.experience_years?.toString() ?? '');
     }
   }, [profile]);
 
   if (authLoading) return null;
   if (!user) return <Navigate to="/signin" replace />;
-
-  if (isLoading) return <div className="max-w-3xl mx-auto animate-pulse h-32 bg-[var(--color-border)]"></div>;
-  if (isError) return <div className="max-w-3xl mx-auto text-[var(--color-signal-error)]">Failed to load profile.</div>;
+  if (isLoading) return <div style={{ padding: '40px 32px', fontSize: 17, color: 'var(--ink-muted)' }}>Loading…</div>;
+  if (isError)   return <div style={{ padding: '40px 32px', fontSize: 17, color: 'var(--vermillion)' }}>Error loading profile</div>;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSaveStatus('');
+    setStatus('');
     try {
       await updateProfileAsync({
         headline: headline || null,
         skills: skills || null,
-        experience_years: experience ? parseInt(experience, 10) : null
+        experience_years: experience ? parseInt(experience, 10) : null,
       });
-      setSaveStatus('Profile updated successfully.');
+      setStatus('saved');
     } catch {
-      setSaveStatus('Failed to update profile.');
+      setStatus('error');
     }
   };
 
+  const inputStyle: React.CSSProperties = {
+    width: '100%', padding: '12px 14px', fontSize: 16,
+    border: '1px solid var(--stone)', background: 'var(--cream)',
+    color: 'var(--ink)', fontFamily: 'inherit', outline: 'none',
+    transition: 'border-color 0.15s', boxSizing: 'border-box',
+  };
+  const labelStyle: React.CSSProperties = {
+    fontSize: 14, fontWeight: 700, textTransform: 'uppercase',
+    letterSpacing: '0.06em', color: 'var(--ink-muted)',
+  };
+
   return (
-    <div className="max-w-3xl mx-auto">
-      <h1 className="font-serif text-4xl mb-8">Profile Settings</h1>
+    <div style={{ minHeight: 'calc(100vh - 52px)', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ padding: '24px 32px 20px', borderBottom: '1px solid var(--stone)', background: 'var(--sand)' }}>
+        <h1 style={{ margin: 0, fontSize: 32, fontWeight: 800, letterSpacing: '-0.02em' }}>Operator Profile</h1>
+        <p style={{ margin: '8px 0 0', fontSize: 16, color: 'var(--ink-muted)' }}>
+          Profile data is used to score incoming signals against your preferences.
+        </p>
+      </div>
 
-      <form onSubmit={handleSubmit} className="space-y-6">
-        <div>
-          <label className="block text-sm text-[var(--color-text-secondary)] mb-2">Headline</label>
-          <input
-            type="text"
-            value={headline}
-            onChange={e => setHeadline(e.target.value)}
-            className="w-full p-3 border border-[var(--color-border)] bg-transparent focus:outline-none focus:border-[var(--color-text-primary)]"
-            placeholder="e.g. Senior Frontend Engineer"
-          />
-        </div>
+      <form
+        onSubmit={handleSubmit}
+        style={{ display: 'flex', flexDirection: 'column', maxWidth: 600, padding: '0 32px' }}
+      >
+        {[
+          { id: 'headline', label: 'Headline', value: headline, set: setHeadline, placeholder: 'e.g. Staff Engineer, open to remote roles', type: 'text' },
+          { id: 'skills',   label: 'Skills (comma-separated)', value: skills, set: setSkills, placeholder: 'React, TypeScript, Go, Postgres', type: 'textarea' },
+          { id: 'exp',      label: 'Years of experience', value: experience, set: setExperience, placeholder: '5', type: 'number' },
+        ].map(({ id, label, value, set, placeholder, type }) => (
+          <div key={id} style={{ padding: '24px 0', borderBottom: '1px solid var(--stone)', display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <label htmlFor={id} style={labelStyle}>{label}</label>
+            {type === 'textarea' ? (
+              <textarea
+                id={id} value={value}
+                onChange={e => set(e.target.value)}
+                placeholder={placeholder}
+                style={{ ...inputStyle, minHeight: 96, resize: 'vertical' }}
+                onFocus={e => (e.target.style.borderColor = 'var(--cobalt)')}
+                onBlur={e => (e.target.style.borderColor = 'var(--stone)')}
+              />
+            ) : (
+              <input
+                id={id} type={type} value={value}
+                onChange={e => set(e.target.value)}
+                placeholder={placeholder}
+                style={inputStyle}
+                onFocus={e => (e.target.style.borderColor = 'var(--cobalt)')}
+                onBlur={e => (e.target.style.borderColor = 'var(--stone)')}
+              />
+            )}
+          </div>
+        ))}
 
-        <div>
-          <label className="block text-sm text-[var(--color-text-secondary)] mb-2">Skills (comma separated)</label>
-          <textarea
-            value={skills}
-            onChange={e => setSkills(e.target.value)}
-            className="w-full p-3 border border-[var(--color-border)] bg-transparent focus:outline-none focus:border-[var(--color-text-primary)] min-h-[100px]"
-            placeholder="React, TypeScript, Node.js"
-          />
-        </div>
-
-        <div>
-          <label className="block text-sm text-[var(--color-text-secondary)] mb-2">Years of Experience</label>
-          <input
-            type="number"
-            value={experience}
-            onChange={e => setExperience(e.target.value)}
-            className="w-full p-3 border border-[var(--color-border)] bg-transparent focus:outline-none focus:border-[var(--color-text-primary)]"
-            placeholder="e.g. 5"
-          />
-        </div>
-
-        <div className="flex items-center gap-4 pt-4">
+        <div style={{ padding: '24px 0', display: 'flex', alignItems: 'center', gap: 20 }}>
           <button
             type="submit"
             disabled={isUpdating}
-            className="px-6 py-2 bg-[var(--color-text-primary)] text-[var(--color-bg-primary)] disabled:opacity-50 hover:bg-[var(--color-text-secondary)] transition-colors"
+            style={{
+              padding: '14px 32px', fontSize: 16, fontWeight: 700,
+              background: 'var(--cobalt)', color: '#fff', border: 'none',
+              cursor: isUpdating ? 'wait' : 'pointer',
+              opacity: isUpdating ? 0.7 : 1,
+            }}
           >
-            {isUpdating ? 'Saving...' : 'Save Profile'}
+            {isUpdating ? 'Saving…' : 'Save profile'}
           </button>
-          {saveStatus && <span className="text-sm text-[var(--color-text-secondary)]">{saveStatus}</span>}
+          {status === 'saved' && (
+            <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--acid)' }}>Saved successfully</span>
+          )}
+          {status === 'error' && (
+            <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--vermillion)' }}>Save failed — try again</span>
+          )}
         </div>
       </form>
     </div>

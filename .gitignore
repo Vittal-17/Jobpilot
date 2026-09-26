@@ -6,3 +6,5 @@ __pycache__/
 .pytest_cache/
 .deploy.lock
 .deploy_pending.json*
+.mcp.json
+.claude/
