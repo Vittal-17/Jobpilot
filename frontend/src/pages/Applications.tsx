@@ -108,6 +108,7 @@ export function Applications() {
         title={<>Every pursuit, <em>in play<Mark variant="underline" /></em>.</>}
         deck="Applications you're following from first contact through to an offer or a close — status yours to update as things move."
         aside={<><span className="u">Tracked</span><span>{items.length}</span></>}
+        reveal="slide"
       />
       {body}
     </div>

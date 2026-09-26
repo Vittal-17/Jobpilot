@@ -82,6 +82,7 @@ export function Saved() {
         title={<>The <em>workbench<Mark variant="ring" /></em>.</>}
         deck="Roles pulled out of the stream and set aside to weigh before you commit."
         aside={<><span className="u">Saved</span><span>{items.length}</span></>}
+        reveal="skew"
       />
       {body}
     </div>

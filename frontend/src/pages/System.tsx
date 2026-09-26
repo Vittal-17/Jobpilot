@@ -143,6 +143,7 @@ export function System() {
         title={<>The engine, <em>live<Mark variant="pulse" /></em>.</>}
         deck="Live observability for the JobPilot recommendation engine — pipeline throughput and telemetry, read straight from the source."
         aside={<div className="sec-status"><i style={{ background: statusColor }} />{statusLabel}</div>}
+        reveal="scale"
       />
       {body}
     </div>

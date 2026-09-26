@@ -1,6 +1,7 @@
 // Wabi-sabi hand marks — one imperfect, hand-drawn stroke per section.
-// Each path is normalised (pathLength=1) so the draw-on animation in
-// SectionHead works regardless of the stroke's real length.
+// The draw-on animation in SectionHead measures each path's real length
+// (getTotalLength) and animates the dash from there, so it works regardless
+// of the stroke's length — the same technique the signin ring uses.
 type MarkVariant = 'underline' | 'swoop' | 'arc' | 'ring' | 'pulse' | 'scribble';
 
 const MARKS: Record<MarkVariant, { viewBox: string; d: string }> = {
@@ -16,7 +17,7 @@ export function Mark({ variant, className = '' }: { variant: MarkVariant; classN
   const m = MARKS[variant];
   return (
     <svg className={`mark mark--${variant} ${className}`} viewBox={m.viewBox} preserveAspectRatio="none" aria-hidden="true">
-      <path className="mark-stroke" pathLength={1} d={m.d} />
+      <path className="mark-stroke" d={m.d} />
     </svg>
   );
 }

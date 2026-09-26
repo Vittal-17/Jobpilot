@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { SmoothScroll } from '@/components/motion/SmoothScroll';
 import { Layout } from '@/components/layout/Layout';
 import { Today } from '@/pages/Today';
 import { Login } from '@/pages/Login';
@@ -25,6 +26,7 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
+        <SmoothScroll />
         <Routes>
           <Route path="/signin" element={<Login />} />
           <Route path="/" element={<Layout><Today /></Layout>} />

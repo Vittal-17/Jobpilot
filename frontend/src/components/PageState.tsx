@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom';
-import type { ReactNode } from 'react';
+import { useRef, type ReactNode } from 'react';
+import { gsap, useGSAP } from '@/lib/anim';
 
 interface PageStateProps {
   tone?: 'neutral' | 'error';
@@ -19,21 +20,39 @@ interface PageStateProps {
  */
 export function PageState({ tone = 'neutral', eyebrow, title, body, action, motif }: PageStateProps) {
   const accent = tone === 'error' ? 'var(--vermillion)' : 'var(--cobalt)';
+  const ref = useRef<HTMLDivElement>(null);
+
+  useGSAP(() => {
+    const mm = gsap.matchMedia();
+    mm.add('(prefers-reduced-motion: no-preference)', () => {
+      const q = gsap.utils.selector(ref);
+      const tl = gsap.timeline({ defaults: { ease: 'power3.out' } });
+      tl.from(q('[data-ps-rule]'), { scaleX: 0, transformOrigin: 'left center', duration: 0.5 })
+        .from(q('[data-ps-eyebrow]'), { x: -10, autoAlpha: 0, duration: 0.4 }, '-=0.35')
+        .from(q('h1'), { y: 28, autoAlpha: 0, duration: 0.75, ease: 'power4.out' }, '-=0.25')
+        .from(q('[data-ps-body]'), { y: 16, autoAlpha: 0, duration: 0.6 }, '-=0.45');
+      const action = q('.ps-action');
+      if (action.length) tl.from(action, { y: 10, autoAlpha: 0, duration: 0.5 }, '-=0.35');
+      const rows = q('[data-ps-motif] > div');
+      if (rows.length) tl.from(rows, { xPercent: 14, autoAlpha: 0, duration: 0.5, stagger: 0.07 }, '-=0.7');
+    });
+    return () => mm.revert();
+  }, { scope: ref });
 
   return (
-    <div style={{ flex: 1, display: 'grid', gridTemplateColumns: 'minmax(0, 1.4fr) minmax(260px, 0.82fr)', minHeight: 0, background: 'var(--cream)' }}>
+    <div ref={ref} style={{ flex: 1, display: 'grid', gridTemplateColumns: 'minmax(0, 1.4fr) minmax(260px, 0.82fr)', minHeight: 0, background: 'var(--cream)' }}>
       {/* Editorial message */}
       <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: 'clamp(32px, 6vh, 76px) clamp(28px, 5vw, 84px)', minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
-          <span style={{ width: 30, height: 2, background: accent, flexShrink: 0 }} />
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700, letterSpacing: '0.22em', textTransform: 'uppercase', color: accent }}>
+          <span data-ps-rule style={{ width: 30, height: 2, background: accent, flexShrink: 0 }} />
+          <span data-ps-eyebrow style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700, letterSpacing: '0.22em', textTransform: 'uppercase', color: accent }}>
             {eyebrow}
           </span>
         </div>
         <h1 style={{ margin: 0, fontSize: 'clamp(32px, 4.4vw, 58px)', fontWeight: 800, lineHeight: 1.0, letterSpacing: '-0.032em', color: 'var(--ink)', maxWidth: '18ch' }}>
           {title}
         </h1>
-        <div style={{ fontSize: 17, color: 'var(--ink-soft)', maxWidth: 520, marginTop: 24, lineHeight: 1.6, borderLeft: `2px solid ${accent}`, paddingLeft: 18 }}>
+        <div data-ps-body style={{ fontSize: 17, color: 'var(--ink-soft)', maxWidth: 520, marginTop: 24, lineHeight: 1.6, borderLeft: `2px solid ${accent}`, paddingLeft: 18 }}>
           {body}
         </div>
         {action && (
@@ -44,7 +63,7 @@ export function PageState({ tone = 'neutral', eyebrow, title, body, action, moti
       </div>
 
       {/* Structural rail — occupies space with restrained geometry, not fake data */}
-      <div className="hatch" style={{ borderLeft: '1px solid var(--stone)', background: 'var(--sand)', display: 'flex', flexDirection: 'column' }}>
+      <div className="hatch" data-ps-motif style={{ borderLeft: '1px solid var(--stone)', background: 'var(--sand)', display: 'flex', flexDirection: 'column' }}>
         {(motif ?? [
           { label: 'DISCOVER', color: 'var(--cobalt)' },
           { label: 'NORMALIZE', color: 'var(--violet)' },

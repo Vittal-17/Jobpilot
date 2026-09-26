@@ -94,6 +94,7 @@ export function Feed() {
         title={<>Every signal, <em>ranked<Mark variant="swoop" /></em>.</>}
         deck="The full archive of roles the engine has surfaced, each scored against your active vectors — strongest match first."
         aside={<><span className="u">Surfaced</span><span>{recs ? recs.total.toLocaleString() : '…'}</span></>}
+        reveal="clip"
       />
       {body}
     </div>

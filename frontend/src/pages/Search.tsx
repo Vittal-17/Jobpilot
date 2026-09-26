@@ -100,6 +100,7 @@ export function Search() {
         title={<>What the engine <em>scans<Mark variant="arc" /></em> for.</>}
         deck="The parameters the discovery engine scans against — each vector widens or sharpens what surfaces in the stream."
         aside={<><span className="u">Configured</span><span>{items.length}</span></>}
+        reveal="blur"
       />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 360px', flex: 1, minHeight: 0 }}>
