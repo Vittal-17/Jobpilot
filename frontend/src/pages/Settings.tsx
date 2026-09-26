@@ -1,7 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { useProfile } from '@/hooks/useProfile';
+import { PageState } from '@/components/PageState';
+import { SectionHead } from '@/components/SectionHead';
+import { Mark } from '@/components/Mark';
 
 export function Settings() {
   const { user, isLoading: authLoading } = useAuth();
@@ -10,19 +13,19 @@ export function Settings() {
   const [skills,     setSkills]     = useState('');
   const [experience, setExperience] = useState('');
   const [status,     setStatus]     = useState('');
+  const [lastProfile, setLastProfile] = useState(profile);
 
-  useEffect(() => {
-    if (profile) {
-      setHeadline(profile.headline ?? '');
-      setSkills(profile.skills ?? '');
-      setExperience(profile.experience_years?.toString() ?? '');
-    }
-  }, [profile]);
+  // Seed the editable form from the fetched profile the first time it arrives
+  // (and whenever it changes) — done during render, not in an effect.
+  if (profile && profile !== lastProfile) {
+    setLastProfile(profile);
+    setHeadline(profile.headline ?? '');
+    setSkills(profile.skills ?? '');
+    setExperience(profile.experience_years?.toString() ?? '');
+  }
 
   if (authLoading) return null;
   if (!user) return <Navigate to="/signin" replace />;
-  if (isLoading) return <div style={{ padding: '40px 32px', fontSize: 17, color: 'var(--ink-muted)' }}>Loading…</div>;
-  if (isError)   return <div style={{ padding: '40px 32px', fontSize: 17, color: 'var(--vermillion)' }}>Error loading profile</div>;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -39,80 +42,79 @@ export function Settings() {
     }
   };
 
-  const inputStyle: React.CSSProperties = {
-    width: '100%', padding: '12px 14px', fontSize: 16,
-    border: '1px solid var(--stone)', background: 'var(--cream)',
-    color: 'var(--ink)', fontFamily: 'inherit', outline: 'none',
-    transition: 'border-color 0.15s', boxSizing: 'border-box',
-  };
-  const labelStyle: React.CSSProperties = {
-    fontSize: 14, fontWeight: 700, textTransform: 'uppercase',
-    letterSpacing: '0.06em', color: 'var(--ink-muted)',
-  };
+  const body = (() => {
+    if (isLoading) {
+      return <PageState eyebrow="Profile" title="Loading your profile…" body="Retrieving the vectors the engine scores incoming signals against." />;
+    }
+    if (isError) {
+      return <PageState tone="error" eyebrow="Profile" title="Couldn't load your profile." body="Your operator profile is stored server-side and could not be retrieved. Try again once the connection settles." />;
+    }
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 380px', flex: 1, minHeight: 0 }}>
+        {/* Form column */}
+        <div style={{ borderRight: '1px solid var(--stone)', minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+          <form className="ed-form" onSubmit={handleSubmit} style={{ maxWidth: 620, padding: '38px 40px' }}>
+            <div className="ed-field">
+              <label htmlFor="pf-headline">Headline</label>
+              <input id="pf-headline" className="ed-input" value={headline} onChange={e => setHeadline(e.target.value)} placeholder="e.g. Staff Engineer, open to remote roles" />
+            </div>
+            <div className="ed-field">
+              <label htmlFor="pf-skills">Skills — comma separated</label>
+              <textarea id="pf-skills" className="ed-textarea" value={skills} onChange={e => setSkills(e.target.value)} placeholder="React, TypeScript, Go, Postgres" />
+            </div>
+            <div className="ed-field">
+              <label htmlFor="pf-exp">Years of experience</label>
+              <input id="pf-exp" className="ed-input" type="number" value={experience} onChange={e => setExperience(e.target.value)} placeholder="5" />
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: 20, marginTop: 4 }}>
+              <button type="submit" className="ed-submit" disabled={isUpdating}>
+                {isUpdating ? 'Saving…' : <>Save profile <span aria-hidden>→</span></>}
+              </button>
+              {status === 'saved' && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--mint)' }}>Saved</span>}
+              {status === 'error' && <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--vermillion)' }}>Save failed — try again</span>}
+            </div>
+          </form>
+          <div className="hatch" style={{ flex: 1, borderTop: '1px solid var(--stone)', minHeight: 40 }} />
+        </div>
+
+        {/* Context rail — explains how the profile feeds scoring */}
+        <div style={{ background: 'var(--sand)', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+          <div style={{ padding: '32px 28px', borderBottom: '1px solid var(--stone)' }}>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--cobalt)', marginBottom: 20 }}>How scoring uses this</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+              {[
+                ['01', 'Headline', 'var(--cobalt)', 'Sets the role identity the MATCH stage weighs each signal against.'],
+                ['02', 'Skills', 'var(--violet)', 'Each skill becomes a vector; overlap with a posting lifts its match score.'],
+                ['03', 'Experience', 'var(--amber)', 'Calibrates seniority so under- and over-levelled roles are down-weighted.'],
+              ].map(([n, t, c, d]) => (
+                <div key={t} style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700, color: 'var(--stone-dark)', width: 18, flexShrink: 0, paddingTop: 3 }}>{n}</span>
+                  <span style={{ width: 7, height: 7, borderRadius: '50%', background: c, flexShrink: 0, marginTop: 7 }} />
+                  <div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--ink)' }}>{t}</div>
+                    <div style={{ fontSize: 15, color: 'var(--ink-soft)', lineHeight: 1.55, marginTop: 2 }}>{d}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="hatch" style={{ flex: 1, minHeight: 40 }} />
+        </div>
+      </div>
+    );
+  })();
 
   return (
-    <div style={{ minHeight: 'calc(100vh - 52px)', display: 'flex', flexDirection: 'column' }}>
-      <div style={{ padding: '24px 32px 20px', borderBottom: '1px solid var(--stone)', background: 'var(--sand)' }}>
-        <h1 style={{ margin: 0, fontSize: 32, fontWeight: 800, letterSpacing: '-0.02em' }}>Operator Profile</h1>
-        <p style={{ margin: '8px 0 0', fontSize: 16, color: 'var(--ink-muted)' }}>
-          Profile data is used to score incoming signals against your preferences.
-        </p>
-      </div>
-
-      <form
-        onSubmit={handleSubmit}
-        style={{ display: 'flex', flexDirection: 'column', maxWidth: 600, padding: '0 32px' }}
-      >
-        {[
-          { id: 'headline', label: 'Headline', value: headline, set: setHeadline, placeholder: 'e.g. Staff Engineer, open to remote roles', type: 'text' },
-          { id: 'skills',   label: 'Skills (comma-separated)', value: skills, set: setSkills, placeholder: 'React, TypeScript, Go, Postgres', type: 'textarea' },
-          { id: 'exp',      label: 'Years of experience', value: experience, set: setExperience, placeholder: '5', type: 'number' },
-        ].map(({ id, label, value, set, placeholder, type }) => (
-          <div key={id} style={{ padding: '24px 0', borderBottom: '1px solid var(--stone)', display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <label htmlFor={id} style={labelStyle}>{label}</label>
-            {type === 'textarea' ? (
-              <textarea
-                id={id} value={value}
-                onChange={e => set(e.target.value)}
-                placeholder={placeholder}
-                style={{ ...inputStyle, minHeight: 96, resize: 'vertical' }}
-                onFocus={e => (e.target.style.borderColor = 'var(--cobalt)')}
-                onBlur={e => (e.target.style.borderColor = 'var(--stone)')}
-              />
-            ) : (
-              <input
-                id={id} type={type} value={value}
-                onChange={e => set(e.target.value)}
-                placeholder={placeholder}
-                style={inputStyle}
-                onFocus={e => (e.target.style.borderColor = 'var(--cobalt)')}
-                onBlur={e => (e.target.style.borderColor = 'var(--stone)')}
-              />
-            )}
-          </div>
-        ))}
-
-        <div style={{ padding: '24px 0', display: 'flex', alignItems: 'center', gap: 20 }}>
-          <button
-            type="submit"
-            disabled={isUpdating}
-            style={{
-              padding: '14px 32px', fontSize: 16, fontWeight: 700,
-              background: 'var(--cobalt)', color: '#fff', border: 'none',
-              cursor: isUpdating ? 'wait' : 'pointer',
-              opacity: isUpdating ? 0.7 : 1,
-            }}
-          >
-            {isUpdating ? 'Saving…' : 'Save profile'}
-          </button>
-          {status === 'saved' && (
-            <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--acid)' }}>Saved successfully</span>
-          )}
-          {status === 'error' && (
-            <span style={{ fontSize: 16, fontWeight: 600, color: 'var(--vermillion)' }}>Save failed — try again</span>
-          )}
-        </div>
-      </form>
+    <div className="page">
+      <SectionHead
+        index="07"
+        kicker="Operator Profile"
+        title={<>The vectors <em>you<Mark variant="scribble" /></em> set.</>}
+        deck="Profile data is scored against every incoming signal — the sharper this is, the sharper the stream."
+        aside={<><span className="u">Operator</span><span className="email">{user.email}</span></>}
+      />
+      {body}
     </div>
   );
 }

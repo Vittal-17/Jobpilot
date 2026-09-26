@@ -20,73 +20,34 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   if (isInitialLoading) {
     return (
-      <div style={{ minHeight: '100vh', background: 'var(--cream)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 17, color: 'var(--ink-muted)' }}>
-        Initializing
-      </div>
+      <div className="mast-init"><i />Initializing</div>
     );
   }
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--cream)' }}>
-      <header style={{
-        background: 'var(--ink)',
-        display: 'flex',
-        alignItems: 'stretch',
-        height: 52,
-        flexShrink: 0,
-      }}>
-        {/* Wordmark */}
-        <Link to="/" style={{
-          display: 'flex', alignItems: 'center',
-          padding: '0 24px',
-          fontSize: 15, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase',
-          color: 'var(--cream)', textDecoration: 'none',
-          borderRight: '1px solid rgba(255,255,255,0.1)',
-        }}>
-          JobPilot
+      <header className="mast">
+        <Link to="/" className="mast-brand">
+          <b>JobPilot</b>
+          <span>The Operator&rsquo;s Log</span>
         </Link>
 
-        {/* Nav */}
-        <nav style={{ display: 'flex', alignItems: 'stretch', flex: 1, overflowX: 'auto' }}>
-          {NAV.map(({ to, label }) => {
-            const active = pathname === to;
-            return (
-              <Link key={to} to={to} style={{
-                display: 'flex', alignItems: 'center',
-                padding: '0 20px',
-                fontSize: 16, fontWeight: active ? 600 : 400,
-                color: active ? '#fff' : 'rgba(255,255,255,0.55)',
-                textDecoration: 'none',
-                background: active ? 'rgba(255,255,255,0.1)' : 'transparent',
-                borderRight: '1px solid rgba(255,255,255,0.06)',
-                transition: 'color 0.15s, background 0.15s',
-                whiteSpace: 'nowrap',
-              }}>
-                {label}
-              </Link>
-            );
-          })}
+        <nav className="mast-nav">
+          {NAV.map(({ to, label }) => (
+            <Link key={to} to={to} className={`mast-tab ${pathname === to ? 'mast-tab--on' : ''}`}>
+              {label}
+            </Link>
+          ))}
         </nav>
 
-        {/* Auth */}
-        <div style={{ display: 'flex', alignItems: 'center', padding: '0 20px', borderLeft: '1px solid rgba(255,255,255,0.1)', gap: 16, flexShrink: 0 }}>
-          {user && (
-            <span style={{ fontSize: 14, color: 'rgba(255,255,255,0.4)', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {user.email}
-            </span>
-          )}
+        <div className="mast-meta">
+          {user && <span className="mast-user">{user.email}</span>}
           {user ? (
-            <button onClick={() => logout()} disabled={isLoggingOut} style={{
-              fontSize: 15, fontWeight: 500, color: 'rgba(255,255,255,0.7)',
-              background: 'none', border: 'none', cursor: 'pointer', padding: 0,
-              transition: 'color 0.15s',
-            }}>
+            <button className="mast-act" onClick={() => logout()} disabled={isLoggingOut}>
               {isLoggingOut ? 'Signing out…' : 'Sign out'}
             </button>
           ) : (
-            <Link to="/signin" style={{ fontSize: 15, fontWeight: 500, color: 'rgba(255,255,255,0.7)', textDecoration: 'none' }}>
-              Sign in
-            </Link>
+            <Link to="/signin" className="mast-act">Sign in</Link>
           )}
         </div>
       </header>

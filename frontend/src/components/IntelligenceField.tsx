@@ -66,7 +66,7 @@ export function IntelligenceField({ isActive, isFailed = false, isLoading = fals
         rand
       };
     }).sort((a, b) => a.score - b.score);
-  }, [items]);
+  }, [items, maxScore]);
 
   useGSAP(() => {
     const mm = gsap.matchMedia();

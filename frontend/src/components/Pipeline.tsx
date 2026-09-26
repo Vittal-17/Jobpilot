@@ -11,12 +11,12 @@ interface PipelineProps {
 }
 
 const STAGES = [
-  { id: 'DISCOVER',  bg: '#1B3FCC', sub: 'Raw signals ingested' },
-  { id: 'NORMALIZE', bg: '#4A14A0', sub: 'Schema standardised' },
-  { id: 'DEDUPE',    bg: '#005BA8', sub: 'Duplicates removed' },
-  { id: 'ENRICH',    bg: '#007050', sub: 'Metadata enriched' },
-  { id: 'MATCH',     bg: '#7A5800', sub: 'Profile scored' },
-  { id: 'SURFACE',   bg: '#B82C1C', sub: 'Ready for review' },
+  { id: 'DISCOVER',  color: 'var(--cobalt)',     sub: 'Raw signals ingested' },
+  { id: 'NORMALIZE', color: 'var(--violet)',     sub: 'Schema standardised' },
+  { id: 'DEDUPE',    color: 'var(--electric)',   sub: 'Duplicates removed' },
+  { id: 'ENRICH',    color: 'var(--mint)',       sub: 'Metadata enriched' },
+  { id: 'MATCH',     color: 'var(--amber)',      sub: 'Profile scored' },
+  { id: 'SURFACE',   color: 'var(--vermillion)', sub: 'Ready for review' },
 ];
 
 function getCount(stage: string, totalProcessed: number, totalMatched?: number | null, totalSurfaced?: number | null): number | string {
@@ -65,31 +65,32 @@ export function Pipeline({ totalProcessed, totalMatched, totalSurfaced, engineSt
     return () => mm.revert();
   }, { scope: ref, dependencies: [totalProcessed, totalMatched, totalSurfaced] });
 
+  const active = isActive && engineStatus !== 'failed';
+
   return (
-    <div ref={ref} style={{ display: 'flex', flexShrink: 0 }}>
+    <div ref={ref} style={{ display: 'flex', flexShrink: 0, flexWrap: 'wrap', borderTop: '1px solid var(--stone)', borderBottom: '1px solid var(--stone)', background: 'var(--cream)' }}>
       {STAGES.map((s, i) => {
         const count = getCount(s.id, totalProcessed, totalMatched, totalSurfaced);
-        const active = isActive && engineStatus !== 'failed';
-        const bg = active ? s.bg : '#5A5550';
+        const dot = active ? s.color : 'var(--stone-dark)';
+        const hasValue = typeof count === 'number';
         return (
           <div
             key={s.id}
             style={{
-              flex: 1,
-              background: bg,
-              padding: '20px 16px 18px',
-              position: 'relative',
-              borderRight: i < 5 ? '2px solid var(--cream)' : 'none',
-              transition: 'background 0.4s ease',
-              minWidth: 0,
+              flex: '1 1 160px', minWidth: 0, position: 'relative',
+              padding: '22px 22px 20px',
+              borderRight: i < STAGES.length - 1 ? '1px solid var(--stone)' : 'none',
             }}
           >
-            {/* Stage label */}
-            <div style={{
-              fontSize: 12, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase',
-              color: 'rgba(255,255,255,0.65)', marginBottom: 6,
-            }}>
-              {s.id}
+            {/* Stage label + step index */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 14 }}>
+              <span style={{ width: 9, height: 9, borderRadius: '50%', background: dot, flexShrink: 0, transition: 'background 0.4s ease' }} />
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--ink-muted)' }}>
+                {s.id}
+              </span>
+              <span style={{ marginLeft: 'auto', fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--stone-dark)' }}>
+                {String(i + 1).padStart(2, '0')}
+              </span>
             </div>
 
             {/* Big count */}
@@ -98,35 +99,20 @@ export function Pipeline({ totalProcessed, totalMatched, totalSurfaced, engineSt
               data-target={count}
               style={{
                 fontFamily: 'var(--font-mono)',
-                fontSize: 'clamp(28px, 3.5vw, 56px)',
+                fontSize: 'clamp(30px, 3.4vw, 52px)',
                 fontWeight: 700,
                 lineHeight: 1,
-                color: '#fff',
-                letterSpacing: '-0.03em',
+                color: hasValue ? 'var(--ink)' : 'var(--stone-dark)',
+                letterSpacing: '-0.04em',
               }}
             >
-              {typeof count === 'number' ? count.toLocaleString() : count}
+              {hasValue ? count.toLocaleString() : count}
             </div>
 
             {/* Sub label */}
-            <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.55)', marginTop: 6, lineHeight: 1.3 }}>
+            <div style={{ fontSize: 13, color: 'var(--ink-muted)', marginTop: 10, lineHeight: 1.35 }}>
               {s.sub}
             </div>
-
-            {/* Arrow connector */}
-            {i < 5 && (
-              <div style={{
-                position: 'absolute', right: -14, top: '50%', transform: 'translateY(-50%)',
-                width: 28, height: 28, background: 'var(--cream)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 14, fontWeight: 700, color: active ? s.bg : '#5A5550',
-                zIndex: 10, borderRadius: '50%',
-                flexShrink: 0,
-                transition: 'color 0.4s ease',
-              }}>
-                →
-              </div>
-            )}
           </div>
         );
       })}

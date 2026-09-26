@@ -38,7 +38,7 @@ export function Today() {
   const isBusy         = engineStatus === 'started';
   const totalProcessed = status?.total_processed ?? 0;
   const totalMatched   = recs?.total ?? 0;
-  const items          = recs?.items ?? [];
+  const items          = useMemo(() => recs?.items ?? [], [recs?.items]);
   const totalSurfaced  = items.length;
 
   const availabilityLabel = isOnline ? 'Online' : 'Unreachable';
@@ -51,12 +51,12 @@ export function Today() {
       const currScore = current.match?.score ?? -1;
       return currScore > bestScore ? current : best;
     }, items[0]);
-  }, [recs?.items]);
+  }, [items]);
 
   const rest = useMemo(() => {
     if (!lead) return [];
     return items.filter(item => item !== lead);
-  }, [recs?.items, lead]);
+  }, [items, lead]);
 
   const hasLead = !!lead;
 
