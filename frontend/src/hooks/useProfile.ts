@@ -8,8 +8,19 @@ export function useProfile() {
   const query = useQuery({
     queryKey: ['profile'],
     queryFn: async () => {
-      const { data } = await apiClient.get<ProfileResponse>('/v1/profile');
-      return data;
+      try {
+        const { data } = await apiClient.get<ProfileResponse>('/v1/profile');
+        return data;
+      } catch (error: any) {
+        // 404 means the authenticated user simply has no profile row yet.
+        // Represent that as an empty (but valid) editable profile rather than
+        // an error — PATCH /v1/profile will create it on first save. Any other
+        // failure (401/500/network) still propagates as a genuine error.
+        if (error?.response?.status === 404) {
+          return {} as ProfileResponse;
+        }
+        throw error;
+      }
     },
     retry: 1
   });
