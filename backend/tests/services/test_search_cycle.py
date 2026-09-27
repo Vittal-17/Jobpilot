@@ -5,13 +5,14 @@ import pytest
 from datetime import datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
-from app.db.database import SessionLocal, engine
+from sqlalchemy.orm import sessionmaker
 from app.db.models.search_execution import SearchExecutionModel, SearchCycleUsageModel
 from app.domain.candidate import SearchCandidate
 from app.services.search_selector import select_next_search, CycleBudgetExhausted
 from app.core.config import settings
 
-def test_cycle_race_exactly_one_claim(monkeypatch):
+def test_cycle_race_exactly_one_claim(monkeypatch, engine):
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     cycle_id = str(uuid.uuid4())
     candidate = SearchCandidate(
         candidate_id="ROLE-TEST::CYCLE-LOC-TEST",
@@ -73,7 +74,8 @@ def test_cycle_race_exactly_one_claim(monkeypatch):
     assert claims == 1
     db.close()
 
-def test_cycle_budget_exhaustion(monkeypatch):
+def test_cycle_budget_exhaustion(monkeypatch, engine):
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     settings.cycle_budget = 2
     cycle_id = str(uuid.uuid4())
     candidates = [
@@ -131,16 +133,17 @@ def test_cycle_budget_exhaustion(monkeypatch):
     assert claims == 2
     db.close()
 
-def test_different_cycles_independent(monkeypatch):
+def test_different_cycles_independent(monkeypatch, engine):
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     c1 = str(uuid.uuid4())
     c2 = str(uuid.uuid4())
-    
+
     cand1 = SearchCandidate(candidate_id=f"ROLE-IND::1-{uuid.uuid4()}", role_id="ROLE", location_id="1", role_canonical="R", location_canonical="L", priority=1, tier=0)
     cand2 = SearchCandidate(candidate_id=f"ROLE-IND::2-{uuid.uuid4()}", role_id="ROLE", location_id="2", role_canonical="R", location_canonical="L", priority=1, tier=0)
-    
-    # We must ensure they pick different candidates, or just rely on the concurrency handling. 
+
+    # We must ensure they pick different candidates, or just rely on the concurrency handling.
     # If they pick the same, one will fail and pick the next.
-    
+
     monkeypatch.setattr("app.services.search_selector.generate_candidates", lambda db=None: [cand1, cand2])
 
     barrier = threading.Barrier(2)
@@ -174,42 +177,51 @@ def test_different_cycles_independent(monkeypatch):
         results = list(executor.map(worker, [c1, c2]))
 
     print(f"\nRESULTS: {results}\n"); assert all(r.action == "execute" for r in results)
-    
+
     db = SessionLocal()
     assert db.query(SearchCycleUsageModel).filter_by(cycle_id=c1).first().execution_count == 1
     assert db.query(SearchCycleUsageModel).filter_by(cycle_id=c2).first().execution_count == 1
     db.close()
 
-def test_n8n_continue_on_fail_contract(monkeypatch):
+def test_n8n_continue_on_fail_contract(monkeypatch, engine):
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     from fastapi.testclient import TestClient
     from app.main import app
     from app.services.provider_router import ProviderSelectionResult
     from app.providers.types import ProviderName
-    
+
     # We must mock router and execute to force 502, but verify select-next gives another candidate
+    def override_get_db():
+        db = SessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+    from app.db.database import get_db
+    app.dependency_overrides[get_db] = override_get_db
     client = TestClient(app)
     from app.core.config import settings
     api_key = settings.api_secret_key
-    
+
     # Fresh cycle
     cycle_id = str(uuid.uuid4())
-    
+
     cand1 = SearchCandidate(candidate_id=f"MOCK::1-{uuid.uuid4()}", role_id="MOCK", location_id="1", role_canonical="M", location_canonical="1", priority=1, tier=0)
     cand2 = SearchCandidate(candidate_id=f"MOCK::2-{uuid.uuid4()}", role_id="MOCK", location_id="2", role_canonical="M", location_canonical="2", priority=1, tier=0)
-    
+
     monkeypatch.setattr("app.services.search_selector.generate_candidates", lambda db=None: [cand1, cand2])
     monkeypatch.setattr("app.services.search_selector.resolve_candidate", lambda db, cid: cand1 if cid == cand1.candidate_id else cand2)
     monkeypatch.setattr("app.services.provider_router.route_provider", lambda db: ProviderSelectionResult(provider=ProviderName.ADZUNA, reason="test", policy_version="v1"))
-    
+
     # Loop iteration 1
     res1 = client.post("/ingestion/internal/select-next", json={"cycle_id": cycle_id}, headers={"x-api-key": api_key})
     assert res1.status_code == 200
     data1 = res1.json()
     assert data1["action"] == "execute"
     assert data1["candidate_id"] == cand1.candidate_id
-    
+
     intent = data1["intent"]
-    
+
     # Fake provider fail via 502 (Actually just mocking run_ingestion to raise ProviderExecutionError or just returning 502 directly)
     # We can mock run_ingestion to return a failed result
     from app.services.ingestion import IngestionResult
@@ -219,22 +231,23 @@ def test_n8n_continue_on_fail_contract(monkeypatch):
         db.commit()
         return IngestionResult(provider=ProviderName.ADZUNA, fetched=0, created=0, duplicates=0, invalid=0, failed=1), []
     monkeypatch.setattr("app.api.endpoints.ingestion.run_ingestion", mock_run_ingestion)
-    
+
     res_exec = client.post("/ingestion/internal/search", json=intent, headers={"x-api-key": api_key})
     print(res_exec.json()); assert res_exec.status_code == 502 # Prove it returns 502 as expected
-    
+
     # Loop iteration 2 (n8n "Continue on fail" catches the 502 and loops)
     res2 = client.post("/ingestion/internal/select-next", json={"cycle_id": cycle_id}, headers={"x-api-key": api_key})
     assert res2.status_code == 200
     data2 = res2.json()
     assert data2["action"] == "execute"
     assert data2["candidate_id"] == cand2.candidate_id
+    app.dependency_overrides.clear()
     # We successfully moved to candidate 2 within the same cycle!
-    
+
     # We can check budget count
     db = SessionLocal()
     assert db.query(SearchCycleUsageModel).filter_by(cycle_id=cycle_id).first().execution_count == 2
-    
+
     # Verify execution 1 was indeed marked failed and execution 2 is selected
     ex1 = db.query(SearchExecutionModel).filter_by(id=data1["execution_id"]).first()
     assert ex1.status == "failed"
@@ -242,17 +255,18 @@ def test_n8n_continue_on_fail_contract(monkeypatch):
     assert ex2.status == "selected"
     db.close()
 
-def test_no_eligible_candidate(monkeypatch):
+def test_no_eligible_candidate(monkeypatch, engine):
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     cycle_id = str(uuid.uuid4())
     # No candidates generated
     monkeypatch.setattr("app.services.search_selector.generate_candidates", lambda db=None: [])
 
     db = SessionLocal()
     result = select_next_search(db, cycle_id=cycle_id)
-    
+
     assert result.action == "stop"
     assert result.reason == "all_candidates_ineligible_or_fresh"
-    
+
     # Prove cycle usage is completely unchanged (no row created)
     usage = db.query(SearchCycleUsageModel).filter_by(cycle_id=cycle_id).first()
     assert usage is None
@@ -264,38 +278,38 @@ def test_n8n_workflow_contract():
     workflow_path = os.path.join(os.path.dirname(__file__), "../../JP___Search_Cycle.json")
     with open(workflow_path, "r") as f:
         data = json.load(f)
-    
+
     workflow = data[0]
     nodes = workflow["nodes"]
-    
+
     loop_nodes = [n for n in nodes if n["type"] == "n8n-nodes-base.loop"]
     assert len(loop_nodes) == 1, "Exactly one Loop node required"
-    
+
     select_nodes = [n for n in nodes if n["name"] == "Select Next"]
     assert len(select_nodes) == 1, "Exactly one Select Next HTTP node required"
     select_node = select_nodes[0]
     assert select_node["type"] == "n8n-nodes-base.httpRequest"
     assert "cycle_id" in select_node["parameters"]["jsonBody"], "Select-next must send cycle_id"
     assert "budget" not in select_node["parameters"]["jsonBody"], "Select-next must not send budget"
-    
+
     exec_nodes = [n for n in nodes if n["name"] == "Execute"]
     assert len(exec_nodes) == 1, "Exactly one Execute HTTP node required"
     exec_node = exec_nodes[0]
     assert exec_node["type"] == "n8n-nodes-base.httpRequest"
     assert exec_node.get("continueOnFail") is True, "Execute node MUST have continueOnFail enabled"
-    
+
     # Check connections
     conns = workflow["connections"]
-    
+
     # Action Check -> Execute (execute branch)
     action_check_conns = conns["Action Check"]["main"]
     assert action_check_conns[0][0]["node"] == "Execute", "Action Check branch 0 must go to Execute"
     assert action_check_conns[1][0]["node"] == "Stop", "Action Check branch 1 must go to Stop"
-    
+
     # Execute -> Loop
     execute_conns = conns["Execute"]["main"]
     assert execute_conns[0][0]["node"] == "Loop", "Execute must route back to Loop"
-    
+
     # Ensure no provider credentials or names hardcoded in workflow
     json_str = json.dumps(workflow)
     assert "adzuna" not in json_str.lower(), "No hardcoded provider names allowed in workflow"

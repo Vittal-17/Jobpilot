@@ -39,7 +39,7 @@ def test_malformed_response_handled(monkeypatch):
         assert "AdzunaProviderSchemaError" in str(exc.value)
 
 def test_database_isolation():
-    from tests.conftest import TEST_DATABASE_URL
+    from conftest import TEST_DATABASE_URL
     # P0.1 safety test
     assert "_test" in TEST_DATABASE_URL, "Test database is not isolated from production!"
 

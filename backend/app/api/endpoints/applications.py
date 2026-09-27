@@ -84,6 +84,15 @@ def list_applications(
     base_query = select(Application).where(Application.user_id == current_user.id)
     total = db.execute(select(func.count()).select_from(base_query.subquery())).scalar_one()
 
+    # Status distribution across the user's ENTIRE application set (not just this
+    # page), so the frontend distribution tiles reflect the real dataset.
+    status_rows = db.execute(
+        select(Application.status, func.count())
+        .where(Application.user_id == current_user.id)
+        .group_by(Application.status)
+    ).all()
+    status_counts = {row_status: count for row_status, count in status_rows}
+
     query = (
         base_query
         .options(joinedload(Application.job))
@@ -98,7 +107,8 @@ def list_applications(
         items=list(applications),
         total=total,
         page=page,
-        size=size
+        size=size,
+        status_counts=status_counts
     )
 
 @router.get(

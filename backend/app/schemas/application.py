@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import Literal
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from app.schemas.job import JobResponse
 
 ApplicationStatusType = Literal["applied", "interviewing", "rejected", "offer", "withdrawn"]
@@ -25,3 +25,6 @@ class PaginatedApplicationResponse(BaseModel):
     total: int
     page: int
     size: int
+    # Whole-dataset status aggregation (independent of pagination), so the UI
+    # can render true distribution counts rather than counting the current page.
+    status_counts: dict[str, int] = Field(default_factory=dict)

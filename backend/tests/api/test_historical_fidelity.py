@@ -22,11 +22,15 @@ def override_get_db():
 def override_get_current_user():
     return User(id=1, email="test@jobpilot.cfd")
 
-app.dependency_overrides[get_db] = override_get_db
-app.dependency_overrides[get_current_user] = override_get_current_user
-client = TestClient(app)
+@pytest.fixture
+def client():
+    app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_user] = override_get_current_user
+    with TestClient(app) as test_client:
+        yield test_client
+    app.dependency_overrides.clear()
 
-def test_legacy_recommendation_row():
+def test_legacy_recommendation_row(client):
     # Setup mock returns
     # rec, job
     job = JobModel(id=1, title="Test", company="C", source="S", discovered_at=datetime.now(timezone.utc), description_is_snippet=False)
@@ -45,7 +49,7 @@ def test_legacy_recommendation_row():
     assert data["items"][0]["match"] is None
 
 
-def test_persisted_match_results_survive_preference_change():
+def test_persisted_match_results_survive_preference_change(client):
     job = JobModel(id=1, title="Test", company="C", source="S", discovered_at=datetime.now(timezone.utc), description_is_snippet=False)
 
     # A historical row that has score and reasons
@@ -67,7 +71,7 @@ def test_persisted_match_results_survive_preference_change():
     assert match["reasons"][0]["message"] == "Matched Python"
 
 
-def test_system_status_zero_executions():
+def test_system_status_zero_executions(client):
     # Return None for both scalars
     mock_db.scalar.side_effect = [None, None, 0]
 
@@ -79,7 +83,7 @@ def test_system_status_zero_executions():
     assert data["latest_execution_status"] is None
 
 
-def test_system_status_latest_execution_logic():
+def test_system_status_latest_execution_logic(client):
     now = datetime.now(timezone.utc)
 
     # last_sync is completed_at of the latest 'succeeded' run
