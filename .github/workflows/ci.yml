@@ -58,3 +58,30 @@ jobs:
           TEST_DATABASE_URL: postgresql+psycopg://jobpilot:jobpilot_pass@localhost:5432/jobpilot_test
           PYTHONPATH: backend
         run: pytest tests/ backend/tests/ -q
+
+  frontend-test:
+    name: Run Frontend Validation
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run Linter
+        run: npm run lint
+
+      - name: Run Typecheck and Build
+        run: npm run build

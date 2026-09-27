@@ -487,51 +487,107 @@ def start_deployment(sha, metadata):
         fail("docker compose up -d failed. Controlled rollback is NOT automated in this milestone.", metadata)
 
 def wait_for_health(metadata):
-    log("Waiting for FastAPI readiness...")
+    log("Waiting for FastAPI and Frontend readiness...")
     timeout = 60
     start = time.time()
 
+    fastapi_cid = None
+    frontend_cid = None
+
     while time.time() - start < timeout:
-        res = subprocess.run(
-            ["docker", "compose", "-f", COMPOSE_FILE, "ps", "--format", "json", "fastapi"],
-            capture_output=True, text=True
-        )
-        if res.returncode == 0 and res.stdout.strip():
-            try:
-                containers = [json.loads(line) for line in res.stdout.strip().split("\n")]
-                fastapi = containers[0]
-                health = fastapi.get("Health", "")
-                if health == "healthy":
-                    log("FastAPI is healthy.")
-                    return fastapi.get("ID") or fastapi.get("Name")
-                elif health == "unhealthy":
-                    fail("FastAPI became unhealthy during deployment. Inspect logs.", metadata)
-            except Exception:
-                pass
+        if not fastapi_cid:
+            res = subprocess.run(
+                ["docker", "compose", "-f", COMPOSE_FILE, "ps", "--format", "json", "fastapi"],
+                capture_output=True, text=True
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                try:
+                    containers = [json.loads(line) for line in res.stdout.strip().split("\n")]
+                    fastapi = containers[0]
+                    health = fastapi.get("Health", "")
+                    if health == "healthy":
+                        log("FastAPI is healthy.")
+                        fastapi_cid = fastapi.get("ID") or fastapi.get("Name")
+                    elif health == "unhealthy":
+                        fail("FastAPI became unhealthy during deployment. Inspect logs.", metadata)
+                except Exception:
+                    pass
+
+        if not frontend_cid:
+            res = subprocess.run(
+                ["docker", "compose", "-f", COMPOSE_FILE, "ps", "--format", "json", "frontend"],
+                capture_output=True, text=True
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                try:
+                    containers = [json.loads(line) for line in res.stdout.strip().split("\n")]
+                    frontend = containers[0]
+                    health = frontend.get("Health", "")
+                    if health == "healthy":
+                        log("Frontend is healthy.")
+                        frontend_cid = frontend.get("ID") or frontend.get("Name")
+                    elif health == "unhealthy":
+                        fail("Frontend became unhealthy during deployment. Inspect logs.", metadata)
+                except Exception:
+                    pass
+
+        if fastapi_cid and frontend_cid:
+            return fastapi_cid, frontend_cid
+
         time.sleep(2)
 
-    fail("FastAPI healthcheck timed out after 60 seconds.", metadata)
+    if not fastapi_cid:
+        fail("FastAPI healthcheck timed out after 60 seconds.", metadata)
+    if not frontend_cid:
+        fail("Frontend healthcheck timed out after 60 seconds.", metadata)
 
 def verify_release(sha, container_id, metadata):
     log(f"Verifying deployed release matches SHA {sha}...")
+    if isinstance(container_id, (list, tuple)):
+        fastapi_cid, frontend_cid = container_id
+    else:
+        fastapi_cid = container_id
+        frontend_cid = None
+
+    # Verify FastAPI
     res = subprocess.run(
-        ["docker", "inspect", container_id],
+        ["docker", "inspect", fastapi_cid],
         capture_output=True, text=True
     )
     if res.returncode != 0:
-        fail(f"Could not inspect running container {container_id}", metadata)
+        fail(f"Could not inspect running FastAPI container {fastapi_cid}", metadata)
 
     try:
         data = json.loads(res.stdout)[0]
         image = data["Config"]["Image"]
         expected_suffix = f"{CANONICAL_IMAGE}:{sha}"
         if image != expected_suffix and not image.endswith(f"/{expected_suffix}"):
-            fail(f"Verification failed: Running image '{image}' does not match expected exact suffix '{expected_suffix}'.", metadata)
+            fail(f"Verification failed: FastAPI running image '{image}' does not match expected exact suffix '{expected_suffix}'.", metadata)
 
         env_vars = data["Config"].get("Env", [])
         sha_env = [e for e in env_vars if e.startswith("APP_COMMIT_SHA=")]
         if not sha_env or sha_env[0].split("=")[1] != sha:
-            fail(f"Verification failed: Container env APP_COMMIT_SHA does not match '{sha}'.", metadata)
+            fail(f"Verification failed: FastAPI container env APP_COMMIT_SHA does not match '{sha}'.", metadata)
+
+        # Verify Frontend
+        if frontend_cid:
+            res_fe = subprocess.run(
+                ["docker", "inspect", frontend_cid],
+                capture_output=True, text=True
+            )
+            if res_fe.returncode != 0:
+                fail(f"Could not inspect running Frontend container {frontend_cid}", metadata)
+
+            data_fe = json.loads(res_fe.stdout)[0]
+            fe_image = data_fe["Config"]["Image"]
+            frontend_expected_suffix = f"jobpilot-frontend:{sha}"
+            if fe_image != frontend_expected_suffix and not fe_image.endswith(f"/{frontend_expected_suffix}"):
+                fail(f"Verification failed: Frontend running image '{fe_image}' does not match expected exact suffix '{frontend_expected_suffix}'.", metadata)
+
+            fe_env_vars = data_fe["Config"].get("Env", [])
+            fe_sha_env = [e for e in fe_env_vars if e.startswith("APP_COMMIT_SHA=")]
+            if not fe_sha_env or fe_sha_env[0].split("=")[1] != sha:
+                fail(f"Verification failed: Frontend container env APP_COMMIT_SHA does not match '{sha}'.", metadata)
 
         log("Release verification passed authoritatively.")
         update_phase(metadata, DeployPhase.ROLLOUT_SUCCEEDED)
@@ -562,8 +618,8 @@ def main():
         if current.get("release_sha") == sha and current.get("phase") == DeployPhase.ROLLOUT_SUCCEEDED.value:
             log(f"Release {sha} is already the current successful release.")
             try:
-                cid = wait_for_health(current)
-                verify_release(sha, cid, current)
+                cids = wait_for_health(current)
+                verify_release(sha, cids, current)
                 log("Idempotent deployment successful: state is already desired.")
                 sys.exit(0)
             except SystemExit:
@@ -589,8 +645,8 @@ def main():
 
         start_deployment(sha, metadata)
 
-        cid = wait_for_health(metadata)
-        verify_release(sha, cid, metadata)
+        cids = wait_for_health(metadata)
+        verify_release(sha, cids, metadata)
 
         os.rename(PENDING_FILE, METADATA_FILE)
         log(f"SUCCESS: Release {sha} deployed and verified safely.")
