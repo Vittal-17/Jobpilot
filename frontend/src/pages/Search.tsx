@@ -99,7 +99,7 @@ export function Search() {
         kicker="Vectors"
         title={<>What the engine <em>scans<Mark variant="arc" /></em> for.</>}
         deck="The parameters the discovery engine scans against — each vector widens or sharpens what surfaces in the stream."
-        aside={<><span className="u">Configured</span><span>{items.length}</span></>}
+        aside={<><span className="u">Configured</span><span>{searches?.total ?? 0}</span></>}
         reveal="blur"
       />
 

@@ -27,7 +27,10 @@ export function Applications() {
   if (!user) return <Navigate to="/signin" replace />;
 
   const items = applications?.items ?? [];
-  const counts = STATUS_OPTIONS.map(s => ({ status: s, n: items.filter(a => a.status === s).length }));
+  // Distribution reflects the whole backend dataset (status_counts), not just
+  // the page currently loaded into `items`.
+  const counts = STATUS_OPTIONS.map(s => ({ status: s, n: applications?.status_counts?.[s] ?? 0 }));
+  const total = applications?.total ?? 0;
 
   const body = (() => {
     if (isLoading) {
@@ -108,7 +111,7 @@ export function Applications() {
         kicker="Tracker"
         title={<>Every pursuit, <em>in play<Mark variant="underline" /></em>.</>}
         deck="Applications you're following from first contact through to an offer or a close — status yours to update as things move."
-        aside={<><span className="u">Tracked</span><span>{items.length}</span></>}
+        aside={<><span className="u">Tracked</span><span>{total}</span></>}
         reveal="slide"
       />
       {body}

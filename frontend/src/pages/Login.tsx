@@ -2,6 +2,7 @@ import { useState, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useGSAP } from '@gsap/react';
 import gsap from 'gsap';
+import axios from 'axios';
 import { apiClient } from '@/api/client';
 
 const reduced = () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -24,8 +25,23 @@ export function Login() {
     try {
       await apiClient.post('/v1/auth/login', { email, password });
       navigate('/');
-    } catch {
-      setError('Those credentials were not recognised.');
+    } catch (err) {
+      // Distinguish a real backend response from a transport failure, and never
+      // surface raw 5xx internals to the operator.
+      let message = 'Sign-in failed. Please try again.';
+      if (axios.isAxiosError(err)) {
+        const status = err.response?.status;
+        if (status === undefined) {
+          message = 'Unable to reach the engine — check your connection and try again.';
+        } else if (status === 401) {
+          message = 'Invalid email or password.';
+        } else if (status === 422) {
+          message = 'Please enter a valid email and password.';
+        } else if (status >= 500) {
+          message = 'The engine is unreachable right now. Please try again shortly.';
+        }
+      }
+      setError(message);
       if (!reduced()) {
         gsap.fromTo('.leaf-form', { x: -9 }, { x: 0, duration: 0.5, ease: 'elastic.out(1, 0.4)' });
       }

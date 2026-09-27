@@ -1,5 +1,6 @@
 import { formatDistanceToNow, parseISO } from 'date-fns';
 import { useSystemStatus } from '@/hooks/useSystemStatus';
+import { useRecommendations } from '@/hooks/useRecommendations';
 import { Pipeline } from '@/components/Pipeline';
 import { PageState } from '@/components/PageState';
 import { SectionHead } from '@/components/SectionHead';
@@ -7,6 +8,10 @@ import { Mark } from '@/components/Mark';
 
 export function System() {
   const { data: status, isLoading, isError } = useSystemStatus();
+  // Authoritative count of surfaced recommendations for the SURFACE stage.
+  // Size 1 keeps the payload minimal — only `total` is consumed here.
+  const { data: recs } = useRecommendations(1, 1);
+  const totalSurfaced = recs?.total ?? null;
 
   const engineStatus = status?.latest_execution_status ?? null;
   const isFailed = engineStatus === 'failed';
@@ -70,7 +75,7 @@ export function System() {
         <Pipeline
           totalProcessed={status.total_processed}
           totalMatched={null}
-          totalSurfaced={null}
+          totalSurfaced={totalSurfaced}
           engineStatus={engineStatus}
           isActive={isActive}
         />

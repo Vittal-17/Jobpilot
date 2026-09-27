@@ -39,7 +39,10 @@ export function Today() {
   const totalProcessed = status?.total_processed ?? 0;
   const totalMatched   = recs?.total ?? 0;
   const items          = useMemo(() => recs?.items ?? [], [recs?.items]);
-  const totalSurfaced  = items.length;
+  // How many recommendations are loaded on this page — a "showing N of M"
+  // figure, NOT a pipeline total. The SURFACE stage uses the true backend
+  // total (totalMatched) instead.
+  const loadedCount    = items.length;
 
   const availabilityLabel = isOnline ? 'Online' : 'Unreachable';
   const availabilityColor = isOnline ? 'var(--mint)' : 'var(--vermillion)';
@@ -114,7 +117,10 @@ export function Today() {
             padding: '0 22px 0 40px', flexShrink: 0,
           }}>
             {STAGES.map((s, i) => {
-              const count = i === 0 ? totalProcessed : i === 5 ? totalSurfaced : null;
+              // DISCOVER = total jobs processed; SURFACE = total recommendations
+              // surfaced (both authoritative backend counts). Intermediate
+              // stages have no persisted count, so they read '—'.
+              const count = i === 0 ? totalProcessed : i === 5 ? totalMatched : null;
               const indent = i * 6; // subtle inward stagger = convergence
               return (
                 <div key={s.id} className="stage-node" style={{
@@ -206,7 +212,7 @@ export function Today() {
               Surfaced stream
             </span>
             <span style={{ fontFamily: 'var(--font-mono)', fontSize: 14, fontWeight: 700, color: 'var(--ink-soft)' }}>
-              {totalSurfaced}/{totalMatched.toLocaleString()}
+              {loadedCount}/{totalMatched.toLocaleString()}
             </span>
           </div>
 
@@ -245,7 +251,7 @@ export function Today() {
 
           <div style={{ padding: '22px 32px', borderTop: '1px solid color-mix(in srgb, var(--stone) 60%, transparent)', display: 'flex', flexDirection: 'column', gap: 12 }}>
             <Link to="/jobs" style={{ fontSize: 16, fontWeight: 700, color: 'var(--ink)', textDecoration: 'none' }}>
-              Full archive{totalMatched > totalSurfaced ? ` · +${(totalMatched - totalSurfaced).toLocaleString()}` : ''} →
+              Full archive{totalMatched > loadedCount ? ` · +${(totalMatched - loadedCount).toLocaleString()}` : ''} →
             </Link>
             <Link to="/search" style={{ fontSize: 15, fontWeight: 600, color: 'var(--ink-muted)', textDecoration: 'none' }}>
               Configure search vectors →

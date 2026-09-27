@@ -102,6 +102,9 @@ export interface PaginatedApplicationResponse {
   total: number;
   page: number;
   size: number;
+  // Whole-dataset status distribution from the backend (independent of the
+  // current page). Keys are ApplicationStatus values; absent statuses are 0.
+  status_counts: Partial<Record<ApplicationStatus, number>>;
 }
 
 export interface SavedJobResponse {
