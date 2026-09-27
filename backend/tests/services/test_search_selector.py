@@ -54,8 +54,9 @@ def test_select_next_search_all_fresh(mock_clean):
     assert result.candidate is None
     assert result.reason == "all_candidates_ineligible_or_fresh"
 
-def test_clean_abandoned_claims_preserves_history():
-    from app.db.database import SessionLocal
+def test_clean_abandoned_claims_preserves_history(engine):
+    from sqlalchemy.orm import sessionmaker
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     from app.db.models.search_execution import SearchExecutionModel
 
     db = SessionLocal()
@@ -137,11 +138,12 @@ def test_select_next_search_does_not_swallow_arbitrary_integrity_error(monkeypat
         select_next_search(MockSession())
 
 
-def test_clean_abandoned_claims_reclaims_started_state():
+def test_clean_abandoned_claims_reclaims_started_state(engine):
     """
     Proves that _clean_abandoned_claims reclaims 'started' claims that have become stale.
     """
-    from app.db.database import SessionLocal
+    from sqlalchemy.orm import sessionmaker
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     from app.db.models.search_execution import SearchExecutionModel
     from datetime import datetime, timezone, timedelta
 
@@ -857,8 +859,9 @@ class TestAdaptiveRetrievalScope:
                         result = select_next_search(db_mock, reference_time=now)
                         assert result.candidate.query_variant == "v_impossible"
 
-    def test_true_multi_cycle_fallback_fairness_with_real_db(self):
-        from app.db.database import SessionLocal
+    def test_true_multi_cycle_fallback_fairness_with_real_db(self, engine):
+        from sqlalchemy.orm import sessionmaker
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         from app.db.models.search_execution import SearchExecutionModel
         from app.services.search_selector import select_next_search, _clean_abandoned_claims
         db = SessionLocal()
@@ -914,8 +917,9 @@ class TestAdaptiveRetrievalScope:
             db.commit()
             db.close()
 
-    def test_db_backed_fallback_fairness_with_identical_timestamps(self):
-        from app.db.database import SessionLocal
+    def test_db_backed_fallback_fairness_with_identical_timestamps(self, engine):
+        from sqlalchemy.orm import sessionmaker
+        SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         from app.db.models.search_execution import SearchExecutionModel
         from app.services.search_selector import select_next_search, _clean_abandoned_claims
         db = SessionLocal()

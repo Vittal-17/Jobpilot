@@ -136,8 +136,8 @@ services:
       - JOOBLE_IN_API_KEY=${JOOBLE_IN_API_KEY:-}
       - JOOBLE_ENABLED=${JOOBLE_ENABLED:-true}
     networks:
-      - frontend
       - backend
+      - frontend
     depends_on:
       db:
         condition: service_healthy

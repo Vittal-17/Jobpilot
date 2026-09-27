@@ -96,10 +96,13 @@ class EnrichmentWorker:
             self.complete_success(db, job_id, token, full_text, source_execution_id)
 
         except SSRFViolation as e:
-            self.complete_failure(db, job_id, token, str(e), unsupported=True)
+            logger.info(f"SSRF violation for job {job_id}, evaluating snippet natively.")
+            self.complete_with_snippet(db, job_id, token, str(e), source_execution_id, unsupported=True)
         except ExtractionError as e:
-            self.complete_failure(db, job_id, token, str(e), unsupported=True)
+            logger.info(f"Extraction error for job {job_id}, evaluating snippet natively.")
+            self.complete_with_snippet(db, job_id, token, str(e), source_execution_id, unsupported=True)
         except Exception as e:
+            logger.warning(f"Scraping failed for job {job_id} ({e})")
             print(f"Exception in process_job: {e}")
             self.complete_failure(db, job_id, token, str(e))
 
@@ -178,6 +181,77 @@ class EnrichmentWorker:
             print(f"Error completing success for job {job_id}: {e}")
             db.rollback()
 
+    def complete_with_snippet(self, db: Session, job_id: int, token: str, reason: str, source_execution_id: int | None = None, unsupported: bool = False):
+        try:
+            with db.begin_nested():
+                # Do not retry if we are evaluating the snippet as a fallback. Mark it unsupported to end the lifecycle.
+                update_enrichment_q = text(f"""
+                    UPDATE job_enrichments SET
+                        status = 'unsupported',
+                        error_reason = :reason,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE job_id = :job_id
+                      AND lease_token = :token
+                      AND lease_expires_at > clock_timestamp()
+                    RETURNING job_id;
+                """)
+                res = db.execute(update_enrichment_q, {"job_id": job_id, "token": token, "reason": reason[:255]})
+                if not res.fetchone():
+                    return
+
+                job = db.query(JobModel).filter(JobModel.id == job_id).first()
+                if not job:
+                    return
+
+                is_eligible = is_fresher_eligible(
+                    title=job.title,
+                    description=job.description,
+                    is_snippet=job.description_is_snippet
+                )
+
+                if is_eligible:
+                    new_recs = 0
+                    job_resp = JobResponse.model_validate(job)
+
+                    active_user_ids = db.query(UserSearch.user_id).filter(UserSearch.enabled == True).distinct().all()
+                    for (uid,) in active_user_ids:
+                        u_profile = db.query(UserProfile).filter(UserProfile.user_id == uid).first()
+                        prefs = RecommendationPreferences(
+                            preferred_roles=u_profile.preferred_roles if u_profile else None,
+                            skills=u_profile.skills if u_profile else None,
+                            preferred_locations=u_profile.preferred_locations if u_profile else None,
+                            remote_preference=u_profile.remote_preference if u_profile else None,
+                            experience_years=u_profile.experience_years if u_profile else None
+                        )
+
+                        match_res = calculate_match(job_resp, prefs)
+                        if match_res.score >= 50:
+                            res = db.execute(text("""
+                                INSERT INTO recommendation_history (user_id, job_id, recommended_at)
+                                VALUES (:user_id, :job_id, CURRENT_TIMESTAMP)
+                                ON CONFLICT (user_id, job_id) DO NOTHING
+                                RETURNING id
+                            """), {"user_id": uid, "job_id": job.id})
+                            if res.scalar() is not None:
+                                new_recs += 1
+                    if source_execution_id:
+                        db.execute(text("""
+                            UPDATE search_execution
+                            SET jobs_fresher_eligible = COALESCE(jobs_fresher_eligible, 0) + 1,
+                                recommendations_created = COALESCE(recommendations_created, 0) + :recs
+                            WHERE id = :eid AND status NOT IN ('failed', 'abandoned')
+                        """), {"recs": new_recs, "eid": source_execution_id})
+                else:
+                    db.execute(text("""
+                        DELETE FROM recommendation_history
+                        WHERE job_id = :job_id AND delivery_id IS NULL
+                    """), {"job_id": job.id})
+
+            db.commit()
+        except Exception as e:
+            logger.error(f"Error completing fallback snippet for job {job_id}: {e}")
+            db.rollback()
+            self.complete_failure(db, job_id, token, f"Fallback failed: {str(e)[:100]}", unsupported=False)
     def complete_failure(self, db: Session, job_id: int, token: str, reason: str, unsupported: bool = False):
         try:
             with db.begin_nested():
