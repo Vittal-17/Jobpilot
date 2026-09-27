@@ -8,6 +8,8 @@ RUN npm run build
 
 # Serve stage
 FROM nginx:alpine
+ARG APP_COMMIT_SHA
+ENV APP_COMMIT_SHA=${APP_COMMIT_SHA}
 COPY --from=builder /app/dist /usr/share/nginx/html
 # SPA routing configuration
 RUN echo 'server { \

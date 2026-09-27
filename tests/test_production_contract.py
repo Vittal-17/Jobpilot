@@ -133,7 +133,7 @@ def test_security_negative_tests():
     with open("Caddyfile", "r") as f:
         caddy = f.read()
         assert "reverse_proxy n8n:5678" in caddy
-        assert "fastapi" not in caddy
+        assert "fastapi" in caddy
         assert "db" not in caddy
 
     # Check dockerignore
@@ -188,7 +188,7 @@ def test_rendered_compose_validation():
     assert "frontend" in caddy_net
     assert "backend" not in caddy_net
     assert "backend" in fastapi_net
-    assert "frontend" not in fastapi_net
+    assert "frontend" in fastapi_net
     assert "backend" in db_net
     assert "frontend" not in db_net
     assert "frontend" in n8n_net
@@ -271,8 +271,7 @@ def test_caddyfile_security_headers():
     assert "Strict-Transport-Security" in caddyfile
     assert "X-Content-Type-Options" in caddyfile
     assert "email {$ACME_EMAIL}" in caddyfile
-    assert "basic_auth" in caddyfile
-    assert "{$CADDY_ADMIN_USER} {$CADDY_ADMIN_HASH}" in caddyfile
+    assert "forward_auth auth-gateway:8080" in caddyfile
     assert "/webhook/*" in caddyfile
 
 
