@@ -50,7 +50,7 @@ export function Applications() {
     return (
       <>
         {/* Status distribution — real counts only, no fabricated stats */}
-        <div style={{ display: 'flex', borderBottom: '1px solid var(--stone)', background: 'var(--cream)' }}>
+        <div className="status-dist" style={{ display: 'flex', borderBottom: '1px solid var(--stone)', background: 'var(--cream)' }}>
           {counts.map(({ status, n }, i) => (
             <div key={status} style={{ flex: 1, padding: '18px 20px', borderLeft: i > 0 ? '1px solid var(--stone)' : 'none', borderTop: `3px solid ${n ? STATUS_COLOR[status] : 'var(--stone)'}` }}>
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 30, fontWeight: 800, lineHeight: 1, letterSpacing: '-0.03em', color: n ? STATUS_COLOR[status] : 'var(--stone-dark)' }}>{n}</div>
@@ -78,6 +78,7 @@ export function Applications() {
             </div>
             <div style={{ display: 'flex', alignItems: 'center', padding: '18px 20px', borderRight: '1px solid var(--stone)' }}>
               <select
+                className="row-select"
                 value={app.status}
                 onChange={(e) => updateApplication({ id: app.id, status: e.target.value as ApplicationStatus })}
                 style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em', color: STATUS_COLOR[app.status] ?? 'var(--ink)', background: 'transparent', border: 'none', outline: 'none', cursor: 'pointer', padding: 0, appearance: 'none' }}

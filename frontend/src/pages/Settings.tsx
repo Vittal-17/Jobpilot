@@ -50,7 +50,7 @@ export function Settings() {
       return <PageState tone="error" eyebrow="Profile" title="Couldn't load your profile." body="Your operator profile is stored server-side and could not be retrieved. Try again once the connection settles." />;
     }
     return (
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 380px', flex: 1, minHeight: 0 }}>
+      <div className="split-2col" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 380px', flex: 1, minHeight: 0 }}>
         {/* Form column */}
         <div style={{ borderRight: '1px solid var(--stone)', minWidth: 0, display: 'flex', flexDirection: 'column' }}>
           <form className="ed-form" onSubmit={handleSubmit} style={{ maxWidth: 620, padding: '38px 40px' }}>

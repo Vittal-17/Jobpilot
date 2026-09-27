@@ -40,7 +40,7 @@ export function PageState({ tone = 'neutral', eyebrow, title, body, action, moti
   }, { scope: ref });
 
   return (
-    <div ref={ref} style={{ flex: 1, display: 'grid', gridTemplateColumns: 'minmax(0, 1.4fr) minmax(260px, 0.82fr)', minHeight: 0, background: 'var(--cream)' }}>
+    <div ref={ref} className="split-2col" style={{ flex: 1, display: 'grid', gridTemplateColumns: 'minmax(0, 1.4fr) minmax(260px, 0.82fr)', minHeight: 0, background: 'var(--cream)' }}>
       {/* Editorial message */}
       <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: 'clamp(32px, 6vh, 76px) clamp(28px, 5vw, 84px)', minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>

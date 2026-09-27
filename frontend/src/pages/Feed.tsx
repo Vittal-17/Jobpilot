@@ -73,7 +73,7 @@ export function Feed() {
         ))}
 
         {/* Pagination — full-width footer band */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px 40px', marginTop: 'auto', borderTop: '1px solid var(--stone)', background: 'var(--sand)' }}>
+        <div className="pager" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '20px 40px', marginTop: 'auto', borderTop: '1px solid var(--stone)', background: 'var(--sand)' }}>
           <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1} style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: page === 1 ? 'var(--stone)' : 'var(--ink)', background: 'none', border: 'none', cursor: page === 1 ? 'default' : 'pointer' }}>
             ← Previous
           </button>

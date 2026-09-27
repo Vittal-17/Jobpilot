@@ -455,3 +455,52 @@ html.lenis, html.lenis body { height: auto; }
     box-shadow: inset 3px 0 0 0 var(--cobalt), 0 6px 20px -14px rgba(28, 25, 22, 0.5);
   }
 }
+
+/* ============================================================
+   Mobile / tablet hardening. Desktop composition is UNCHANGED —
+   every rule below is scoped inside a max-width media query and,
+   where it must beat an inline desktop declaration, uses
+   !important so it applies ONLY at narrow widths. Above the
+   breakpoints the original desktop layout is untouched.
+   ============================================================ */
+
+/* Two-column page shells (JobDetail article+rail, Search list+rail,
+   Settings form+rail, PageState message+rail) collapse to a single
+   column so the fixed-width rail can no longer overflow/clip. */
+@media (max-width: 768px) {
+  .split-2col { grid-template-columns: 1fr !important; }
+
+  /* Fixed-pixel data grids (Feed / Saved / Applications / Search rows)
+     stack into full-width cards; the mono caption row is dropped since
+     each cell reads in context. Nothing is clipped or unreachable. */
+  .grid-head { display: none !important; }
+  .signal-entry { display: flex !important; flex-direction: column; }
+  .signal-entry > * { border-right: none !important; }
+
+  /* Row-level controls reach an ~44px tap target */
+  .row-btn, .row-select { min-height: 44px; }
+
+  /* Pipeline: a deterministic 2-column grid (6 fixed stages → 3 rows)
+     with structurally correct separators — no dangling wrapped borders. */
+  .pipeline { display: grid !important; grid-template-columns: repeat(2, 1fr); }
+  .pipeline > div { border-right: 1px solid var(--stone) !important; border-bottom: 1px solid var(--stone); }
+  .pipeline > div:nth-child(2n) { border-right: none !important; }
+  .pipeline > div:nth-child(5), .pipeline > div:nth-child(6) { border-bottom: none; }
+}
+
+@media (max-width: 560px) {
+  /* Excessive edge gutters trimmed on the narrowest screens */
+  .pager { padding: 16px 20px !important; }
+  .jd-article > div { padding-left: 20px !important; padding-right: 20px !important; }
+
+  /* Detail actions stack full-width (bigger touch targets, no cramping) */
+  .jd-actions { flex-direction: column; }
+  .jd-actions > * { flex: 1 1 auto !important; border-left: none !important; border-right: none !important; border-bottom: 1px solid var(--stone); }
+  .jd-actions > *:last-child { border-bottom: none; }
+}
+
+@media (max-width: 520px) {
+  /* Applications status summary reflows from 5-across into a tidy grid */
+  .status-dist { display: grid !important; grid-template-columns: repeat(3, 1fr); }
+  .status-dist > div { border-left: none !important; }
+}

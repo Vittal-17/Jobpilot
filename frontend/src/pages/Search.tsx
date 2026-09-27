@@ -72,10 +72,10 @@ export function Search() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '18px 16px', borderLeft: '1px solid var(--stone)' }}>
               {user ? (
                 <>
-                  <button onClick={() => updateSearch({ id: s.id, payload: { enabled: !s.enabled } })} style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: s.enabled ? 'var(--cobalt)' : 'var(--stone-dark)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                  <button className="row-btn" onClick={() => updateSearch({ id: s.id, payload: { enabled: !s.enabled } })} style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: s.enabled ? 'var(--cobalt)' : 'var(--stone-dark)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
                     {s.enabled ? 'Active' : 'Paused'}
                   </button>
-                  <button onClick={() => deleteSearch(s.id)} style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--vermillion)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                  <button className="row-btn" onClick={() => deleteSearch(s.id)} style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--vermillion)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
                     Remove
                   </button>
                 </>
@@ -103,7 +103,7 @@ export function Search() {
         reveal="blur"
       />
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 360px', flex: 1, minHeight: 0 }}>
+      <div className="split-2col" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 360px', flex: 1, minHeight: 0 }}>
         {/* Vector list */}
         <div style={{ display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--stone)', minWidth: 0 }}>
           {listBody}

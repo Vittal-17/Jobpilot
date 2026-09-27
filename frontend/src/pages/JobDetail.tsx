@@ -54,9 +54,9 @@ export function JobDetail() {
 
   return (
     <div className="page" ref={rootRef}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 360px', flex: 1, minHeight: 0 }}>
+      <div className="split-2col" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 360px', flex: 1, minHeight: 0 }}>
         {/* Editorial article column */}
-        <div style={{ display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--stone)', minWidth: 0 }}>
+        <div className="jd-article" style={{ display: 'flex', flexDirection: 'column', borderRight: '1px solid var(--stone)', minWidth: 0 }}>
           {/* Breadcrumb band */}
           <div className="jd-rise" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '13px 40px', borderBottom: '1px solid var(--stone)', background: 'var(--sand)', fontFamily: 'var(--font-mono)', fontSize: 12, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
             <Link to="/" style={{ fontWeight: 700, color: 'var(--cobalt)', textDecoration: 'none' }}>← Today</Link>
@@ -94,7 +94,7 @@ export function JobDetail() {
           </div>
 
           {/* Actions */}
-          <div className="jd-rise" style={{ display: 'flex', borderBottom: '1px solid var(--stone)' }}>
+          <div className="jd-rise jd-actions" style={{ display: 'flex', borderBottom: '1px solid var(--stone)' }}>
             <button onClick={handleSave} disabled={isSaving} style={{ flex: 1, padding: '16px 24px', fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', background: 'var(--sand)', border: 'none', borderRight: '1px solid var(--stone)', cursor: isSaving ? 'wait' : 'pointer', color: 'var(--ink)', transition: 'background 0.15s' }} onMouseOver={e => (e.currentTarget.style.background = '#E5DDD0')} onMouseOut={e => (e.currentTarget.style.background = 'var(--sand)')}>
               {isSaving ? 'Saving…' : '+ Save signal'}
             </button>

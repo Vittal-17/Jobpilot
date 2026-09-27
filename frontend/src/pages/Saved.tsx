@@ -63,7 +63,7 @@ export function Saved() {
               <span style={{ fontSize: 14, color: 'var(--stone-dark)' }}>{formatDistanceToNow(parseISO(saved.saved_at))} ago</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', padding: '18px 20px' }}>
-              <button onClick={() => unsaveJob(saved.job.id)} disabled={isUnsaving} style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--vermillion)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+              <button className="row-btn" onClick={() => unsaveJob(saved.job.id)} disabled={isUnsaving} style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: 'var(--vermillion)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
                 Remove
               </button>
             </div>

@@ -60,7 +60,7 @@ export function Login() {
         </div>
       </div>
 
-      <div className="leaf-grid">
+      <div className="leaf-grid" data-lenis-prevent>
         {/* masthead */}
         <div className="leaf-master">
           <span className="leaf-index" aria-hidden>01</span>

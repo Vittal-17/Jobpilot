@@ -68,7 +68,7 @@ export function Pipeline({ totalProcessed, totalMatched, totalSurfaced, engineSt
   const active = isActive && engineStatus !== 'failed';
 
   return (
-    <div ref={ref} style={{ display: 'flex', flexShrink: 0, flexWrap: 'wrap', borderTop: '1px solid var(--stone)', borderBottom: '1px solid var(--stone)', background: 'var(--cream)' }}>
+    <div ref={ref} className="pipeline" style={{ display: 'flex', flexShrink: 0, flexWrap: 'wrap', borderTop: '1px solid var(--stone)', borderBottom: '1px solid var(--stone)', background: 'var(--cream)' }}>
       {STAGES.map((s, i) => {
         const count = getCount(s.id, totalProcessed, totalMatched, totalSurfaced);
         const dot = active ? s.color : 'var(--stone-dark)';
