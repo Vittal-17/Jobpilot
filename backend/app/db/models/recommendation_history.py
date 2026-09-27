@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Integer, DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import Integer, DateTime, ForeignKey, UniqueConstraint, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -12,6 +12,8 @@ class RecommendationHistoryModel(Base):
     job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False, index=True)
     recommended_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
     delivery_id: Mapped[str | None] = mapped_column(ForeignKey("notification_deliveries.delivery_id", ondelete="SET NULL"), index=True, nullable=True)
+    score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reasons: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("user_id", "job_id", name="uq_recommendation_history_user_job"),

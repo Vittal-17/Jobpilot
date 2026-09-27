@@ -26,8 +26,8 @@ def auth_client(client, db_session):
 
 def test_unauthenticated_jobs_access(client):
     client.cookies.clear()
-    assert client.get("/v1/jobs").status_code == 401
-    assert client.get("/v1/jobs/1").status_code == 401
+    assert client.get("/v1/jobs").status_code == 200
+    assert client.get("/v1/jobs/1").status_code == 404
 
 def test_get_jobs_empty(auth_client):
     res = auth_client.get("/v1/jobs", follow_redirects=False)

@@ -1,4 +1,3 @@
-from app.db.database import SessionLocal, engine
 import concurrent.futures
 import os
 import threading
@@ -11,8 +10,8 @@ from app.db.models.search_execution import SearchExecutionModel
 from app.domain.candidate import SearchCandidate
 from app.services.search_selector import select_next_search
 
-
-def test_real_postgres_same_candidate_claim_contention(monkeypatch):
+def test_real_postgres_same_candidate_claim_contention(monkeypatch, engine):
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     candidate = SearchCandidate(
         candidate_id="ROLE-TEST::LOC-TEST",
         role_id="ROLE-TEST",
@@ -71,7 +70,8 @@ def test_real_postgres_same_candidate_claim_contention(monkeypatch):
         cleanup.close()
         engine.dispose()
 
-def test_active_claim_blocks_started_state(monkeypatch):
+def test_active_claim_blocks_started_state(monkeypatch, engine):
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     """
     Proves that if an execution is in the 'started' state,
     another concurrent selector cannot claim it.

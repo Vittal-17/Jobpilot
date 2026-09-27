@@ -1,7 +1,7 @@
 import pytest
 import os
 import urllib.parse
-from tests.conftest import get_test_db_url
+from conftest import get_test_db_url
 from app.core.config import settings
 
 def test_db_url_requires_explicit_env(monkeypatch):
