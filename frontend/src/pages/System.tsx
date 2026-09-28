@@ -1,12 +1,14 @@
 import { formatDistanceToNow, parseISO } from 'date-fns';
 import { useSystemStatus } from '@/hooks/useSystemStatus';
 import { useRecommendations } from '@/hooks/useRecommendations';
+import { useAuth } from '@/hooks/useAuth';
 import { Pipeline } from '@/components/Pipeline';
 import { PageState } from '@/components/PageState';
 import { SectionHead } from '@/components/SectionHead';
 import { Mark } from '@/components/Mark';
 
 export function System() {
+  const { user } = useAuth();
   const { data: status, isLoading, isError } = useSystemStatus();
   // Authoritative count of surfaced recommendations for the SURFACE stage.
   // Size 1 keeps the payload minimal — only `total` is consumed here.
@@ -150,6 +152,59 @@ export function System() {
         aside={<div className="sec-status"><i style={{ background: statusColor }} />{statusLabel}</div>}
         reveal="scale"
       />
+      {user && (
+        <div style={{
+          borderBottom: '1px solid var(--stone)',
+          background: 'var(--sand)',
+          padding: '16px clamp(20px, 4vw, 40px)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 16,
+          flexWrap: 'wrap',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, minWidth: 0 }}>
+            <span style={{
+              width: 8, height: 8, borderRadius: '50%',
+              background: 'var(--cobalt)', flexShrink: 0,
+            }} />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
+                <span style={{
+                  fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700,
+                  letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--cobalt)',
+                }}>
+                  Operator Control · Automation Core
+                </span>
+                <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--ink-muted)' }}>
+                  n8n.jobpilot.cfd
+                </span>
+              </div>
+              <span style={{ fontSize: 14, color: 'var(--ink-soft)' }}>
+                Autonomous workflow orchestration, ingestion triggers, and pipeline execution.
+              </span>
+            </div>
+          </div>
+          <a
+            href="https://n8n.jobpilot.cfd"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="ed-submit"
+            style={{
+              textDecoration: 'none',
+              padding: '10px 20px',
+              fontSize: 13,
+              fontFamily: 'var(--font-mono)',
+              letterSpacing: '0.06em',
+              textTransform: 'uppercase',
+              flexShrink: 0,
+              gap: 8,
+            }}
+          >
+            Launch Automation Core <span aria-hidden>↗</span>
+          </a>
+        </div>
+      )}
       {body}
     </div>
   );
