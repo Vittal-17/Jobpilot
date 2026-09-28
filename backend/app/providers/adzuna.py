@@ -9,6 +9,33 @@ from app.models.job import Job
 from app.schemas.job_search import JobSearchQuery
 from app.core.config import settings
 
+def _parse_employment_type(contract_time: str | None, contract_type: str | None) -> str | None:
+    clean_time = str(contract_time).strip().lower().replace("-", "_") if contract_time and str(contract_time).strip() else None
+    clean_type = str(contract_type).strip().lower().replace("-", "_") if contract_type and str(contract_type).strip() else None
+
+    # 1. Recognized contract_time values take precedence
+    if clean_time == "full_time":
+        return "Full-time"
+    if clean_time == "part_time":
+        return "Part-time"
+
+    # 2. Fall back to recognized contract_type values when contract_time is absent or unrecognized
+    if clean_type == "permanent":
+        return "Permanent"
+    if clean_type == "contract":
+        return "Contract"
+
+    # 3. If neither is recognized, fall back to unrecognized contract_time if present
+    if clean_time:
+        return clean_time.replace("_", " ").title()
+
+    # 4. Otherwise fall back to unrecognized contract_type if present
+    if clean_type:
+        return clean_type.replace("_", " ").title()
+
+    return None
+
+
 logger = logging.getLogger(__name__)
 
 class AdzunaProvider(JobProvider):
@@ -91,6 +118,8 @@ class AdzunaProvider(JobProvider):
                     except ValueError:
                         pass
 
+                emp_type = _parse_employment_type(item.get("contract_time"), item.get("contract_type"))
+
                 job = Job(
                     title=item.get("title", ""),
                     company=item.get("company", {}).get("display_name", "Unknown"),
@@ -100,6 +129,7 @@ class AdzunaProvider(JobProvider):
                     location=item.get("location", {}).get("display_name"),
                     description=item.get("description"),
                     description_is_snippet=True,
+                    employment_type=emp_type,
                     salary_min=int(item.get("salary_min")) if item.get("salary_min") else None,
                     salary_max=int(item.get("salary_max")) if item.get("salary_max") else None,
                     url=item.get("redirect_url"),
