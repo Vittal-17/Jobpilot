@@ -7,6 +7,7 @@ from typing import List
 import sqlalchemy
 from sqlalchemy.orm import Session
 from sqlalchemy import text
+from sqlalchemy.dialects.postgresql import insert
 
 from app.db.database import SessionLocal
 from app.db.models.job import JobModel
@@ -154,12 +155,19 @@ class EnrichmentWorker:
 
                         match_res = calculate_match(job_resp, prefs)
                         if match_res.score >= 50:
-                            res = db.execute(text("""
-                                INSERT INTO recommendation_history (user_id, job_id, recommended_at)
-                                VALUES (:user_id, :job_id, CURRENT_TIMESTAMP)
-                                ON CONFLICT (user_id, job_id) DO NOTHING
-                                RETURNING id
-                            """), {"user_id": uid, "job_id": job.id})
+                            reasons_data = [
+                                r.model_dump() if hasattr(r, 'model_dump') else r
+                                for r in match_res.reasons
+                            ] if match_res.reasons else None
+                            stmt = insert(RecommendationHistoryModel).values(
+                                user_id=uid,
+                                job_id=job.id,
+                                score=match_res.score,
+                                reasons=reasons_data
+                            ).on_conflict_do_nothing(
+                                index_elements=['user_id', 'job_id']
+                            ).returning(RecommendationHistoryModel.id)
+                            res = db.execute(stmt)
                             if res.scalar() is not None:
                                 new_recs += 1
                     if source_execution_id:
@@ -226,12 +234,19 @@ class EnrichmentWorker:
 
                         match_res = calculate_match(job_resp, prefs)
                         if match_res.score >= 50:
-                            res = db.execute(text("""
-                                INSERT INTO recommendation_history (user_id, job_id, recommended_at)
-                                VALUES (:user_id, :job_id, CURRENT_TIMESTAMP)
-                                ON CONFLICT (user_id, job_id) DO NOTHING
-                                RETURNING id
-                            """), {"user_id": uid, "job_id": job.id})
+                            reasons_data = [
+                                r.model_dump() if hasattr(r, 'model_dump') else r
+                                for r in match_res.reasons
+                            ] if match_res.reasons else None
+                            stmt = insert(RecommendationHistoryModel).values(
+                                user_id=uid,
+                                job_id=job.id,
+                                score=match_res.score,
+                                reasons=reasons_data
+                            ).on_conflict_do_nothing(
+                                index_elements=['user_id', 'job_id']
+                            ).returning(RecommendationHistoryModel.id)
+                            res = db.execute(stmt)
                             if res.scalar() is not None:
                                 new_recs += 1
                     if source_execution_id:

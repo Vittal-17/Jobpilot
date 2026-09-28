@@ -12,6 +12,7 @@ from app.db.models.user import User
 from app.db.models.user_search import UserSearch
 from app.db.models.user_profile import UserProfile
 from app.models.job import Job as PydanticJob
+from app.schemas.match import MatchReason
 from app.db.repository.job_repository import save_job, enqueue_job_enrichment
 
 @pytest.fixture
@@ -63,6 +64,7 @@ def test_enrichment_worker_success(db_session, mock_ssrf):
         mock_eligible.return_value = True
         mock_score_res = MagicMock()
         mock_score_res.score = 75
+        mock_score_res.reasons = [MatchReason(code="SKILLS_MATCH", message="Matched skills")]
         mock_score.return_value = mock_score_res
 
         worker = EnrichmentWorker()
@@ -79,6 +81,11 @@ def test_enrichment_worker_success(db_session, mock_ssrf):
     rec = db_session.query(RecommendationHistoryModel).filter_by(job_id=job.id).first()
     assert rec is not None
     assert rec.user_id == user.id
+    assert rec.score == 75
+    assert rec.reasons is not None
+    assert len(rec.reasons) == 1
+    assert rec.reasons[0]["code"] == "SKILLS_MATCH"
+    assert rec.reasons[0]["message"] == "Matched skills"
 
 def test_enrichment_worker_stale_lease(db_session):
     job = JobModel(
@@ -367,6 +374,11 @@ def test_enrichment_worker_snippet_fallback_positive(db_session):
     from app.db.models.recommendation_history import RecommendationHistoryModel
     rec = db_session.query(RecommendationHistoryModel).filter_by(job_id=job.id).first()
     assert rec is not None
+    assert rec.score is not None
+    assert rec.score >= 50
+    assert rec.reasons is not None
+    assert len(rec.reasons) > 0
+    assert any(r.get("code") == "ROLE_MATCH" for r in rec.reasons)
 
 def test_enrichment_worker_snippet_fallback_extraction_error(db_session):
     job = JobModel(
@@ -438,3 +450,54 @@ def test_enrichment_worker_snippet_fallback_exception_handling(db_session):
     updated = db_session.query(JobEnrichmentModel).filter_by(job_id=9997).first()
     assert updated.status == "retry"
     assert "Fallback failed" in updated.error_reason
+
+
+def test_enrichment_worker_recommendation_conflict_safe(db_session, mock_ssrf):
+    user = User(email="conflict_test@example.com", password_hash="dummy")
+    db_session.add(user)
+    db_session.flush()
+
+    user_search = UserSearch(user_id=user.id, query="Dev", enabled=True)
+    user_profile = UserProfile(user_id=user.id, preferred_roles="Dev")
+    db_session.add(user_search)
+    db_session.add(user_profile)
+
+    job = JobModel(
+        title="Dev",
+        company="Co",
+        source="test",
+        source_job_id="conflict-1",
+        discovered_at=datetime.now(timezone.utc),
+        description="Full description text here with enough length to pass length check. " * 5,
+        description_is_snippet=False,
+        url="https://example.com/job-conflict"
+    )
+    db_session.add(job)
+    db_session.flush()
+
+    existing_rec = RecommendationHistoryModel(
+        user_id=user.id,
+        job_id=job.id,
+        score=99,
+        reasons=[{"code": "PRE_EXISTING", "message": "Pre-existing match"}]
+    )
+    db_session.add(existing_rec)
+    db_session.flush()
+
+    enrichment = JobEnrichmentModel(
+        job_id=job.id,
+        status='in_progress',
+        url=job.url,
+        lease_token="test-token"
+    )
+    db_session.add(enrichment)
+    db_session.execute(text("UPDATE job_enrichments SET lease_expires_at = clock_timestamp() + interval '5 minutes' WHERE job_id = :jid"), {"jid": job.id})
+    db_session.flush()
+
+    worker = EnrichmentWorker()
+    worker.complete_success(db_session, job.id, "test-token", job.description)
+
+    recs = db_session.query(RecommendationHistoryModel).filter_by(job_id=job.id).all()
+    assert len(recs) == 1
+    assert recs[0].score == 99
+    assert recs[0].reasons[0]["code"] == "PRE_EXISTING"
