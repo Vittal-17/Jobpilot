@@ -32,7 +32,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <header className="mast">
         <Link to="/" className="mast-brand" ref={brandRef}>
           <b>JobPilot</b>
-          <span>The Operator&rsquo;s Log</span>
+          <span className="mast-hide">The Operator&rsquo;s Log</span>
         </Link>
 
         <nav className="mast-nav">
@@ -55,7 +55,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </div>
       </header>
 
-      <main style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+      <main style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
         {children}
       </main>
     </div>
