@@ -67,15 +67,15 @@ export function Today() {
     const mm = gsap.matchMedia();
     mm.add('(prefers-reduced-motion: no-preference)', () => {
       const tl = gsap.timeline({ defaults: { ease: 'power3.out' } });
-      tl.from('.stage-node', { opacity: 0, x: -14, duration: 0.5, stagger: 0.05, clearProps: 'all' })
-        .from('.lead-in',   { opacity: 0, y: 22, duration: 0.6, clearProps: 'all' }, '-=0.2')
-        .from('.stream-row', { opacity: 0, x: 20, duration: 0.45, stagger: 0.06, clearProps: 'all' }, '-=0.3');
+      tl.from('.stage-node', { opacity: 0, x: -14, duration: 0.5, stagger: 0.05, clearProps: 'opacity,transform' })
+        .from('.lead-in',   { opacity: 0, y: 22, duration: 0.6, clearProps: 'opacity,transform' }, '-=0.2')
+        .from('.stream-row', { opacity: 0, x: 20, duration: 0.45, stagger: 0.06, clearProps: 'opacity,transform' }, '-=0.3');
     });
     return () => mm.revert();
   }, { scope: container, dependencies: [recsLoading, statusLoading] });
 
   return (
-    <div ref={container} style={{
+    <div ref={container} className="today-page" style={{
       position: 'relative', minHeight: 'calc(100vh - 52px)',
       display: 'flex', flexDirection: 'column', overflow: 'hidden',
       background: 'linear-gradient(108deg, var(--cream) 0%, var(--cream) 42%, var(--sand) 100%)',
@@ -84,7 +84,7 @@ export function Today() {
       <IntelligenceField isActive={isActive} isFailed={isFailed} isLoading={recsLoading || statusLoading} items={items} hoveredJobId={hoveredJobId} />
 
       {/* Quiet system line — demoted to the top edge, never a KPI header. */}
-      <div style={{
+      <div className="today-system-bar" style={{
         position: 'relative', zIndex: 3,
         display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 10,
         padding: '16px 40px 0', flexShrink: 0,
@@ -103,13 +103,13 @@ export function Today() {
 
       {/* One continuous field: funnel rail bleeds into the lead, which bleeds
           into the surfaced stream. No cards, no seams, no slabs. */}
-      <div style={{
+      <div className="today-grid" style={{
         position: 'relative', zIndex: 2, flex: 1,
         display: 'grid', gridTemplateColumns: 'minmax(0, 1.5fr) minmax(300px, 0.72fr)',
         alignItems: 'stretch',
       }}>
         {/* LEAD territory (with the funnel stage-rail overlapping its left) */}
-        <div style={{ position: 'relative', display: 'flex', minWidth: 0 }}>
+        <div className="today-lead-territory" style={{ position: 'relative', display: 'flex', minWidth: 0 }}>
           {/* Stage rail — DISCOVER↓SURFACE traces the funnel narrowing inward.
               Vertical flow, not a horizontal metric strip. */}
           <div className="stage-rail" style={{
@@ -128,7 +128,7 @@ export function Today() {
                   marginLeft: indent, padding: '5px 0',
                 }}>
                   <span style={{ width: 6, height: 6, borderRadius: '50%', background: s.color, flexShrink: 0, alignSelf: 'center' }} />
-                  <span style={{ fontSize: 12, fontWeight: 800, letterSpacing: '0.1em', color: s.color, minWidth: 74 }}>{s.id}</span>
+                  <span className="stage-label" style={{ fontSize: 12, fontWeight: 800, letterSpacing: '0.1em', color: s.color, minWidth: 74 }}>{s.id}</span>
                   <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 700, color: 'var(--ink)' }}>
                     {statusLoading ? '·' : count !== null ? count.toLocaleString() : '—'}
                   </span>
@@ -146,7 +146,7 @@ export function Today() {
             </div>
 
             {isEngineFailed || isFeedFailed ? (
-              <div style={{ maxWidth: 620 }}>
+              <div className="today-lead-empty" style={{ maxWidth: 620 }}>
                 <div style={{ fontSize: 'clamp(36px, 4.6vw, 64px)', fontWeight: 800, lineHeight: 1.0, letterSpacing: '-0.03em', color: 'var(--ink)' }}>
                   {isEngineFailed ? 'The stream went quiet.' : 'Failed to retrieve recommendations.'}
                 </div>
@@ -156,18 +156,18 @@ export function Today() {
               </div>
             ) : hasLead ? (
               <Link to={`/jobs/${lead.job.id}`} onMouseEnter={() => setHoveredJobId(lead.job.id)} onMouseLeave={() => setHoveredJobId(null)} style={{ textDecoration: 'none', color: 'inherit', display: 'block', maxWidth: 720 }}>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: 'clamp(14px, 2vw, 28px)', flexWrap: 'wrap' }}>
-                  <span style={{
+                <div className="today-lead-score-row" style={{ display: 'flex', alignItems: 'baseline', gap: 'clamp(14px, 2vw, 28px)', flexWrap: 'wrap' }}>
+                  <span className="today-lead-score" style={{
                     fontFamily: 'var(--font-mono)', fontSize: 'clamp(72px, 9vw, 140px)', fontWeight: 800,
                     lineHeight: 0.82, letterSpacing: '-0.05em', color: scoreColor(lead.match?.score),
                   }}>
                     {lead.match?.score ?? '—'}
                   </span>
-                  <div style={{ minWidth: 220 }}>
-                    <div style={{ fontSize: 'clamp(30px, 3.6vw, 56px)', fontWeight: 800, lineHeight: 1.04, letterSpacing: '-0.03em', color: 'var(--ink)' }}>
+                  <div className="today-lead-title-wrap" style={{ minWidth: 220 }}>
+                    <div className="today-lead-title" style={{ fontSize: 'clamp(30px, 3.6vw, 56px)', fontWeight: 800, lineHeight: 1.14, letterSpacing: '-0.03em', color: 'var(--ink)' }}>
                       {lead.job.title}
                     </div>
-                    <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'baseline', marginTop: 10 }}>
+                    <div className="today-lead-meta" style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'baseline', marginTop: 10 }}>
                       <span style={{ fontSize: 18, fontWeight: 700, color: 'var(--cobalt)' }}>{lead.job.company}</span>
                       {lead.job.location && <span style={{ fontSize: 15, color: 'var(--ink-muted)' }}>{lead.job.location}</span>}
                       {lead.job.remote && <span style={{ fontSize: 12, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'var(--acid)' }}>Remote</span>}
@@ -176,7 +176,7 @@ export function Today() {
                   </div>
                 </div>
                 {lead.match?.reasons && lead.match.reasons.length > 0 && (
-                  <div style={{ marginTop: 24, display: 'flex', flexDirection: 'column', gap: 9, maxWidth: 560, borderLeft: `2px solid ${scoreColor(lead.match.score)}`, paddingLeft: 18 }}>
+                  <div className="today-lead-reasons" style={{ marginTop: 24, display: 'flex', flexDirection: 'column', gap: 9, maxWidth: 560, borderLeft: `2px solid ${scoreColor(lead.match.score)}`, paddingLeft: 18 }}>
                     {lead.match.reasons.slice(0, 3).map((r, i) => (
                       <span key={i} style={{ fontSize: 16, color: 'var(--ink-soft)', lineHeight: 1.45 }}>{r.message}</span>
                     ))}
@@ -184,7 +184,7 @@ export function Today() {
                 )}
               </Link>
             ) : (
-              <div style={{ maxWidth: 640 }}>
+              <div className="today-lead-empty" style={{ maxWidth: 640 }}>
                 <div style={{ fontSize: 'clamp(36px, 4.6vw, 64px)', fontWeight: 800, lineHeight: 1.0, letterSpacing: '-0.03em', color: 'var(--ink)' }}>
                   {totalProcessed > 0 ? `${totalProcessed.toLocaleString()} signals in flight.` : 'The pipeline is warming up.'}
                 </div>
@@ -201,13 +201,13 @@ export function Today() {
 
         {/* SURFACED STREAM — a warm wash bleeding in from the right edge,
             not a dark sidebar slab. */}
-        <div style={{
+        <div className="today-stream-rail" style={{
           position: 'relative', alignSelf: 'stretch',
           display: 'flex', flexDirection: 'column', minWidth: 0,
           background: 'linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--sand) 55%, transparent) 22%, var(--sand) 100%)',
           borderLeft: '1px solid color-mix(in srgb, var(--stone) 60%, transparent)',
         }}>
-          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', padding: '28px 32px 16px' }}>
+          <div className="today-stream-head" style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', padding: '28px 32px 16px' }}>
             <span style={{ fontSize: 13, fontWeight: 800, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--ink-muted)' }}>
               Surfaced stream
             </span>
@@ -216,7 +216,7 @@ export function Today() {
             </span>
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflowY: 'auto' }}>
+          <div className="today-stream-list" style={{ display: 'flex', flexDirection: 'column', flex: 1, overflowY: 'auto' }}>
             {rest.map(({ job, match, recommended_at }) => (
               <Link key={job.id} to={`/jobs/${job.id}`} className="stream-row" style={{
                 display: 'grid', gridTemplateColumns: '52px 1fr', gap: 14, alignItems: 'baseline',
@@ -249,7 +249,7 @@ export function Today() {
             )}
           </div>
 
-          <div style={{ padding: '22px 32px', borderTop: '1px solid color-mix(in srgb, var(--stone) 60%, transparent)', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div className="today-stream-footer" style={{ padding: '22px 32px', borderTop: '1px solid color-mix(in srgb, var(--stone) 60%, transparent)', display: 'flex', flexDirection: 'column', gap: 12 }}>
             <Link to="/jobs" style={{ fontSize: 16, fontWeight: 700, color: 'var(--ink)', textDecoration: 'none' }}>
               Full archive{totalMatched > loadedCount ? ` · +${(totalMatched - loadedCount).toLocaleString()}` : ''} →
             </Link>
