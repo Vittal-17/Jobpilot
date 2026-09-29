@@ -216,7 +216,7 @@ export function Today() {
             </span>
           </div>
 
-          <div className="today-stream-list" style={{ display: 'flex', flexDirection: 'column', flex: 1, overflowY: 'auto' }}>
+          <div className="today-stream-list" data-lenis-prevent style={{ display: 'flex', flexDirection: 'column', flex: 1, overflowY: 'auto' }}>
             {rest.map(({ job, match, recommended_at }) => (
               <Link key={job.id} to={`/jobs/${job.id}`} className="stream-row" style={{
                 display: 'grid', gridTemplateColumns: '52px 1fr', gap: 14, alignItems: 'baseline',
