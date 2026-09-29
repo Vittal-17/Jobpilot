@@ -18,6 +18,14 @@ from fastapi.staticfiles import StaticFiles
 AUTH_SECRET_KEY = os.getenv("AUTH_SECRET_KEY")
 if not AUTH_SECRET_KEY:
     raise ValueError("AUTH_SECRET_KEY environment variable is mandatory and must be set.")
+
+ENVIRONMENT = os.getenv("ENVIRONMENT", "production").lower()
+if ENVIRONMENT in ("production", "prod"):
+    if len(AUTH_SECRET_KEY) < 16:
+        raise ValueError("AUTH_SECRET_KEY must be at least 16 characters long.")
+    if AUTH_SECRET_KEY in {"your_strong_internal_api_secret_key_here", "dev_secret_key_1234567", "test"}:
+        raise ValueError("AUTH_SECRET_KEY must not be a known unsafe default.")
+
 CADDY_ADMIN_USER = os.getenv("CADDY_ADMIN_USER", "admin")
 CADDY_ADMIN_HASH_B64 = os.getenv("CADDY_ADMIN_HASH_B64", "")
 
@@ -32,6 +40,16 @@ if os.path.isdir("static"):
     app.mount("/static", StaticFiles(directory="static"), name="static")
 
 # --- Security Helpers ---
+def get_client_ip(request: Request) -> str:
+    xfwd = request.headers.get("x-forwarded-for")
+    if xfwd:
+        # Caddy is the only upstream, and it appends the actual observed client IP.
+        # Thus, the rightmost IP in the list is the genuine client IP.
+        ips = [ip.strip() for ip in xfwd.split(",")]
+        if ips:
+            return ips[-1]
+    return request.client.host if request.client else "unknown"
+
 def verify_password(plain_password: str) -> bool:
     if not CADDY_ADMIN_HASH_B64:
         return False
@@ -79,8 +97,13 @@ BLOCK_TIME_SECONDS = 60
 
 def is_rate_limited(ip: str) -> bool:
     now = time.time()
-    # Clean up old attempts
-    FAILED_ATTEMPTS[ip] = [t for t in FAILED_ATTEMPTS[ip] if now - t < BLOCK_TIME_SECONDS]
+    valid_attempts = [t for t in FAILED_ATTEMPTS[ip] if now - t < BLOCK_TIME_SECONDS]
+    if not valid_attempts:
+        if ip in FAILED_ATTEMPTS:
+            del FAILED_ATTEMPTS[ip]
+        return False
+
+    FAILED_ATTEMPTS[ip] = valid_attempts
     return len(FAILED_ATTEMPTS[ip]) >= MAX_FAILURES
 
 def record_failed_attempt(ip: str):
@@ -104,7 +127,7 @@ async def login_submit(
     password: str = Form(...),
     rd: str = Form("/")
 ):
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = get_client_ip(request)
 
     if is_rate_limited(client_ip):
         return templates.TemplateResponse(request, "login.html", {"rd": rd, "error": "Too many attempts. Please try again later."}, status_code=429)

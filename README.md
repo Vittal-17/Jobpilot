@@ -16,9 +16,11 @@ The intended production architecture is:
 ```
 Internet
     ↓
-Reverse Proxy / HTTPS
+Reverse Proxy / HTTPS (Caddy)
     ↓
-n8n (Local Orchestration Layer)
+Auth Gateway (Operator Protection)
+    ↓
+n8n (Orchestration Layer)
     ↓
 PRIVATE DOCKER NETWORK
     ↓
@@ -44,8 +46,11 @@ PostgreSQL (State / Persistence / Quotas)
 JobPilot uses `pytest` and `respx` for robust isolation.
 To run tests:
 ```bash
-export PYTHONPATH=backend
-pytest tests/
+export ENVIRONMENT="test"
+export AUTH_SECRET_KEY="test"
+export PYTHONPATH=backend:auth-gateway
+pytest tests/ backend/tests/
+cd auth-gateway && pytest tests/
 ```
 **Safety Note:** Tests strictly require the `TEST_DATABASE_URL` environment variable to be set. The URL must be explicitly verified and the database name must contain `_test`, or else the test suite will instantly abort to protect development data.
 
@@ -58,7 +63,7 @@ pytest tests/
 ## Limitations & Roadmap
 
 - **Scoring:** Match scoring is planned but not fully implemented.
-- **Orchestration:** n8n is deployed locally for automated runs (production VPS exposure is a future milestone).
+- **Orchestration:** n8n is deployed to the production VPS and protected via the Auth Gateway layer (`n8n.jobpilot.cfd`).
 
 ### Quota Consumption Semantics
 - **Atomic Pre-emption:** JobPilot explicitly acquires and commits the provider quota *before* issuing any external network request.
