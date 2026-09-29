@@ -343,11 +343,14 @@ The test runner enforces strict isolation in [conftest.py](file:///home/vittal/P
 
 ### Executing Backend Tests
 ```bash
+export ENVIRONMENT="test"
+export AUTH_SECRET_KEY="test"
 TEST_DATABASE_URL="postgresql+psycopg://<user>:<password>@127.0.0.1:5432/<test_db_containing__test>" \
 API_SECRET_KEY="<key_min_16_chars>" \
-PYTHONPATH=backend pytest tests/ backend/tests/ -q
+PYTHONPATH=backend:auth-gateway python -m pytest tests/ backend/tests/ -q
+cd auth-gateway && PYTHONPATH=. python -m pytest tests/ -q
 ```
-*(Result: 445 passed unit and integration tests).*
+*(Release certification result: 470 passed, 0 failed, 2 warnings).*
 
 ### Executing Frontend Validation
 ```bash

@@ -14,7 +14,8 @@ def test_caddyfile_routing():
 
     # 2. Caddy -> auth-gateway routing for login UI
     assert '@auth_public {' in content
-    assert 'path /login /logout /static/*' in content
+    assert 'path /login /logout' in content
+    assert '/static/*' not in content.split('@auth_public {')[1].split('}')[0], "auth-gateway must not route /static/* to prevent n8n asset failure"
     assert 'reverse_proxy auth-gateway:8080' in content
 
     # 3. Authenticated forwarding to n8n (forward_auth)

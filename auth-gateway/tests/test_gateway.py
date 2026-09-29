@@ -165,3 +165,30 @@ def test_credential_loading_malformed():
 
     # Restore
     main.CADDY_ADMIN_HASH_B64 = old_hash
+
+def test_ip_extraction_from_x_forwarded_for():
+    # Test that rate limiting isolates distinct X-Forwarded-For clients
+    # Client A: fails 5 times, gets blocked
+    for _ in range(5):
+        res = client.post("/login", data={"username": "a", "password": "b", "rd": "/"}, headers={"X-Forwarded-For": "1.1.1.1, 10.0.0.1"})
+        assert res.status_code == 401
+
+    # 6th attempt is blocked
+    res = client.post("/login", data={"username": "a", "password": "b", "rd": "/"}, headers={"X-Forwarded-For": "1.1.1.1, 10.0.0.1"})
+    assert res.status_code == 429
+
+    # Client B: totally fine, not blocked
+    res = client.post("/login", data={"username": "a", "password": "b", "rd": "/"}, headers={"X-Forwarded-For": "1.1.1.1, 10.0.0.2"})
+    assert res.status_code == 401 # Failed but NOT 429
+
+def test_ip_extraction_spoofed():
+    # If attacker spoofs X-Forwarded-For, Caddy appends the real IP
+    # So headers might be "spoofed_ip, real_ip"
+    # Fails 5 times on real_ip
+    for _ in range(5):
+        res = client.post("/login", data={"username": "a", "password": "b", "rd": "/"}, headers={"X-Forwarded-For": "9.9.9.9, 10.0.0.3"})
+        assert res.status_code == 401
+
+    # 6th attempt blocked for real_ip even if spoofed_ip changes!
+    res = client.post("/login", data={"username": "a", "password": "b", "rd": "/"}, headers={"X-Forwarded-For": "8.8.8.8, 10.0.0.3"})
+    assert res.status_code == 429

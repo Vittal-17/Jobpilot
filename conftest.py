@@ -95,3 +95,17 @@ def db_session(engine):
     finally:
         session.rollback()
         session.close()
+
+@pytest.fixture(autouse=True)
+def reset_fastapi_rate_limiter():
+    try:
+        from app.api.endpoints.auth import LOGIN_ATTEMPTS
+        LOGIN_ATTEMPTS.clear()
+    except ImportError:
+        pass
+    yield
+    try:
+        from app.api.endpoints.auth import LOGIN_ATTEMPTS
+        LOGIN_ATTEMPTS.clear()
+    except ImportError:
+        pass
