@@ -62,6 +62,7 @@
     flex-direction: column;
     flex: 1;
     width: 100%;
+    min-width: 0;
     background: var(--cream);
   }
 
@@ -85,6 +86,9 @@
       color-mix(in srgb, var(--stone) 42%, transparent) 11px,
       color-mix(in srgb, var(--stone) 42%, transparent) 12px
     );
+  }
+  [data-ps-motif] {
+    overflow: hidden;
   }
 }
 
@@ -230,6 +234,7 @@
 .mast {
   display: flex; align-items: stretch; height: 52px; flex-shrink: 0;
   background: var(--cream); border-bottom: 1px solid var(--stone);
+  overflow: hidden;
 }
 .mast-brand {
   display: flex; align-items: center; justify-content: center; gap: 9px; padding: 0 22px; flex-shrink: 0;
@@ -240,7 +245,7 @@
   font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.16em;
   text-transform: uppercase; color: var(--ink-muted);
 }
-.mast-nav { display: flex; align-items: stretch; flex: 1; overflow-x: auto; }
+.mast-nav { display: flex; align-items: stretch; flex: 1; overflow-x: auto; min-width: 0; }
 .mast-tab {
   display: flex; align-items: center; padding: 0 15px; text-decoration: none; white-space: nowrap;
   font-family: var(--font-mono); font-size: 12px; font-weight: 700; letter-spacing: 0.09em;
@@ -249,6 +254,7 @@
 }
 .mast-tab:hover { color: var(--ink); }
 .mast-tab--on { color: var(--cobalt); border-bottom-color: var(--cobalt); }
+.mast-tab--ext { margin-left: auto; border-left: 1px solid var(--stone); }
 .mast-meta {
   display: flex; align-items: center; gap: 14px; padding: 0 20px; flex-shrink: 0;
   border-left: 1px solid var(--stone);
@@ -511,6 +517,18 @@ html.lenis, html.lenis body { height: auto; }
   .status-dist > div { border-left: none !important; }
 }
 
+/* Today desktop viewport containment */
+.today-grid {
+  min-height: 0;
+}
+.today-lead-territory,
+.today-stream-rail {
+  min-height: 0;
+}
+.today-stream-list {
+  min-height: 0;
+}
+
 /* Today page mobile layout hardening (320px, 360px, 390px, 430px) */
 @media (max-width: 768px) {
   .today-page {
@@ -631,11 +649,109 @@ html.lenis, html.lenis body { height: auto; }
 }
 
 @media (max-width: 380px) {
+  .mast-brand { padding: 0 14px; }
+  .mast-hide { display: none; }
+  .mast-meta { padding: 0 14px; }
   .today-lead-territory .stage-rail {
     grid-template-columns: repeat(2, 1fr) !important;
   }
   .today-lead-score-row {
     flex-direction: column !important;
     gap: 4px !important;
+  }
+}
+
+/* ============================================================
+   Mobile Navigation UX
+   ============================================================ */
+.mast-mobile-active {
+  display: none;
+}
+.mast-menu-toggle {
+  display: none;
+}
+.mast-mobile-menu {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .mast-nav {
+    display: none !important;
+  }
+  .mast-user {
+    display: none !important;
+  }
+  .mast-act--logout, .mast-act--login {
+    display: none !important;
+  }
+
+  .mast-mobile-active {
+    display: flex;
+    align-items: center;
+    flex: 1;
+    padding: 0 14px;
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--ink);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .mast-menu-toggle {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--ink);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+  }
+
+  .mast-mobile-menu {
+    display: flex;
+    flex-direction: column;
+    position: absolute;
+    top: 52px;
+    left: 0;
+    right: 0;
+    background: var(--cream);
+    border-bottom: 1px solid var(--stone);
+    z-index: 1000;
+    padding: 10px 0;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+  }
+
+  .mast-mobile-tab {
+    padding: 12px 24px;
+    text-decoration: none;
+    font-family: var(--font-mono);
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    border-left: 3px solid transparent;
+  }
+  .mast-mobile-tab--on {
+    color: var(--cobalt);
+    border-left-color: var(--cobalt);
+    background: color-mix(in srgb, var(--sand) 55%, transparent);
+  }
+  .mast-mobile-actions {
+    padding: 12px 24px;
+    border-top: 1px solid var(--stone);
+    margin-top: 8px;
+  }
+  .mast-mobile-actions .mast-act {
+    display: inline-block;
   }
 }
