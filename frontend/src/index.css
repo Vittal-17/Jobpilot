@@ -518,6 +518,11 @@ html.lenis, html.lenis body { height: auto; }
 }
 
 /* Today desktop viewport containment */
+.today-page {
+  flex: 1;
+  min-height: 0 !important;
+  max-height: calc(100vh - 52px) !important;
+}
 .today-grid {
   min-height: 0;
 }
@@ -536,6 +541,7 @@ html.lenis, html.lenis body { height: auto; }
     overflow-y: auto !important;
     overflow-x: hidden !important;
     height: auto !important;
+    max-height: none !important;
   }
   .today-system-bar {
     padding: 12px 20px 0 !important;
