@@ -532,6 +532,29 @@ html.lenis, html.lenis body { height: auto; }
 }
 .today-stream-list {
   min-height: 0;
+  /* The .stream-row entrance animates from x:20 — clip that transient rightward
+     overflow so no horizontal scrollbar flashes, while keeping vertical scroll. */
+  overflow-x: hidden;
+  /* Firefox: narrow, subtle thumb over a transparent track. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--stone-dark) transparent;
+}
+/* Chromium/WebKit: minimal JobPilot-consistent scrollbar, scoped to the stream. */
+.today-stream-list::-webkit-scrollbar {
+  width: 8px;
+}
+.today-stream-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+.today-stream-list::-webkit-scrollbar-thumb {
+  background: var(--stone-dark);
+  border-radius: 4px;
+}
+.today-stream-list::-webkit-scrollbar-thumb:hover {
+  background: var(--cobalt);
+}
+.today-stream-list::-webkit-scrollbar-button {
+  display: none;
 }
 
 /* Today page mobile layout hardening (320px, 360px, 390px, 430px) */
