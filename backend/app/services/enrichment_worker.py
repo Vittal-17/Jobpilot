@@ -2,6 +2,7 @@ import uuid
 import os
 import socket
 import logging
+import httpx
 from datetime import datetime, timezone
 from typing import List
 import sqlalchemy
@@ -101,6 +102,9 @@ class EnrichmentWorker:
             self.complete_with_snippet(db, job_id, token, str(e), source_execution_id, unsupported=True)
         except ExtractionError as e:
             logger.info(f"Extraction error for job {job_id}, evaluating snippet natively.")
+            self.complete_with_snippet(db, job_id, token, str(e), source_execution_id, unsupported=True)
+        except httpx.HTTPError as e:
+            logger.info(f"Network error for job {job_id}, evaluating snippet natively.")
             self.complete_with_snippet(db, job_id, token, str(e), source_execution_id, unsupported=True)
         except Exception as e:
             logger.warning(f"Scraping failed for job {job_id} ({e})")

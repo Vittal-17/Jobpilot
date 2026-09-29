@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     postgres_host: str = "localhost"
     postgres_port: int = 5432
     database_url: str | None = None
+    db_pool_size: int = 20
+    db_max_overflow: int = 25
 
     adzuna_app_id: str = ""
     adzuna_app_key: str = ""

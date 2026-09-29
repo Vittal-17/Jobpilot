@@ -51,6 +51,41 @@ def register(user_in: UserCreate, db: Session = Depends(get_db)):
         )
 
 
+import time
+from collections import defaultdict
+from fastapi import APIRouter, Depends, HTTPException, Response, status, Cookie, Request
+
+# Simple in-memory rate limiter for login
+LOGIN_ATTEMPTS = defaultdict(list)
+MAX_LOGIN_ATTEMPTS = 10
+LOGIN_BLOCK_TIME_SECONDS = 60
+
+def is_login_rate_limited(identifier: str) -> bool:
+    now = time.time()
+    valid_attempts = [t for t in LOGIN_ATTEMPTS[identifier] if now - t < LOGIN_BLOCK_TIME_SECONDS]
+
+    if not valid_attempts:
+        if identifier in LOGIN_ATTEMPTS:
+            del LOGIN_ATTEMPTS[identifier]
+    else:
+        LOGIN_ATTEMPTS[identifier] = valid_attempts
+
+    # Python dictionaries are safe to query for missing keys,
+    # but since we might have deleted it, we check using get()
+    if len(LOGIN_ATTEMPTS.get(identifier, [])) >= MAX_LOGIN_ATTEMPTS:
+        return True
+
+    LOGIN_ATTEMPTS[identifier].append(now)
+    return False
+
+def get_real_ip(request: Request) -> str:
+    xfwd = request.headers.get("x-forwarded-for")
+    if xfwd:
+        ips = [ip.strip() for ip in xfwd.split(",")]
+        if ips:
+            return ips[-1]
+    return request.client.host if request.client else "unknown"
+
 @router.post(
     "/login",
     response_model=UserResponse,
@@ -60,8 +95,25 @@ def register(user_in: UserCreate, db: Session = Depends(get_db)):
 def login(
     login_req: LoginRequest,
     response: Response,
+    request: Request,
     db: Session = Depends(get_db)
 ):
+    client_ip = get_real_ip(request)
+
+    # Rate limit by IP
+    if is_login_rate_limited(f"ip:{client_ip}"):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login attempts. Please try again later."
+        )
+
+    # Rate limit by Email
+    if is_login_rate_limited(f"email:{login_req.email.lower()}"):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many login attempts for this account. Please try again later."
+        )
+
     try:
         user = auth_service.authenticate_user(db, login_req.email, login_req.password)
         if not user:
