@@ -18,14 +18,17 @@ export { gsap, ScrollTrigger, useGSAP };
  * layout/design is untouched. At rest the element sits exactly where it always
  * did (x/y = 0); it only drifts toward the cursor while hovered.
  */
-export function useMagnetic<T extends HTMLElement>(strength = 0.35) {
+export function useMagnetic<T extends HTMLElement>(strength = 0.35, deps: unknown[] = []) {
   const ref = useRef<T>(null);
   useGSAP(
     () => {
       const el = ref.current;
       if (!el || REDUCE()) return;
-      const xTo = gsap.quickTo(el, 'x', { duration: 0.6, ease: 'power3.out' });
-      const yTo = gsap.quickTo(el, 'y', { duration: 0.6, ease: 'power3.out' });
+
+      const target = el.firstElementChild as HTMLElement || el;
+
+      const xTo = gsap.quickTo(target, 'x', { duration: 0.6, ease: 'power3.out' });
+      const yTo = gsap.quickTo(target, 'y', { duration: 0.6, ease: 'power3.out' });
       const move = (e: PointerEvent) => {
         const r = el.getBoundingClientRect();
         xTo((e.clientX - (r.left + r.width / 2)) * strength);
@@ -42,7 +45,7 @@ export function useMagnetic<T extends HTMLElement>(strength = 0.35) {
         el.removeEventListener('pointerleave', leave);
       };
     },
-    { scope: ref },
+    { scope: ref, dependencies: deps },
   );
   return ref;
 }

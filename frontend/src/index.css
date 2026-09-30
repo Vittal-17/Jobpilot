@@ -25,6 +25,11 @@
   --acid:        #8CA800;   /* success / remote */
 }
 
+html {
+  scrollbar-width: thin;
+  scrollbar-color: var(--stone-dark) transparent;
+}
+
 @layer base {
   *, *::before, *::after { box-sizing: border-box; }
   body {
@@ -535,25 +540,23 @@ html.lenis, html.lenis body { height: auto; }
   /* The .stream-row entrance animates from x:20 — clip that transient rightward
      overflow so no horizontal scrollbar flashes, while keeping vertical scroll. */
   overflow-x: hidden;
-  /* Firefox: narrow, subtle thumb over a transparent track. */
-  scrollbar-width: thin;
-  scrollbar-color: var(--stone-dark) transparent;
 }
-/* Chromium/WebKit: minimal JobPilot-consistent scrollbar, scoped to the stream. */
-.today-stream-list::-webkit-scrollbar {
+/* Chromium/WebKit: site-wide minimal JobPilot-consistent scrollbar. */
+::-webkit-scrollbar {
   width: 8px;
+  height: 8px;
 }
-.today-stream-list::-webkit-scrollbar-track {
+::-webkit-scrollbar-track {
   background: transparent;
 }
-.today-stream-list::-webkit-scrollbar-thumb {
+::-webkit-scrollbar-thumb {
   background: var(--stone-dark);
   border-radius: 4px;
 }
-.today-stream-list::-webkit-scrollbar-thumb:hover {
+::-webkit-scrollbar-thumb:hover {
   background: var(--cobalt);
 }
-.today-stream-list::-webkit-scrollbar-button {
+::-webkit-scrollbar-button {
   display: none;
 }
 

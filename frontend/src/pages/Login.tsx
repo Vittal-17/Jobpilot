@@ -1,5 +1,6 @@
 import { useState, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { useGSAP } from '@gsap/react';
 import gsap from 'gsap';
 import axios from 'axios';
@@ -16,6 +17,7 @@ export function Login() {
   const [error, setError]       = useState('');
   const [loading, setLoading]   = useState(false);
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const rootRef  = useRef<HTMLDivElement>(null);
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -23,7 +25,8 @@ export function Login() {
     setError('');
     setLoading(true);
     try {
-      await apiClient.post('/v1/auth/login', { email, password });
+      const { data: user } = await apiClient.post('/v1/auth/login', { email, password });
+      queryClient.setQueryData(['auth', 'me'], user);
       navigate('/');
     } catch (err) {
       // Distinguish a real backend response from a transport failure, and never
