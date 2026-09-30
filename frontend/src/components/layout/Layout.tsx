@@ -16,8 +16,9 @@ const NAV = [
 export function Layout({ children }: { children: React.ReactNode }) {
   const { pathname } = useLocation();
   const { user, isFetching, isError, logout, isLoggingOut } = useAuth();
+  const isInitialLoading = isFetching && !isError && user === undefined;
   // Wordmark drifts toward the cursor; sits dead-centre (x/y = 0) at rest.
-  const brandRef = useMagnetic<HTMLAnchorElement>(0.4);
+  const brandRef = useMagnetic<HTMLAnchorElement>(0.4, [isInitialLoading]);
 
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -58,9 +59,6 @@ export function Layout({ children }: { children: React.ReactNode }) {
     };
   }, [isMenuOpen]);
 
-  // Only show initializing on the very first fetch before we know if they are logged in or not
-  const isInitialLoading = isFetching && !isError && user === undefined;
-
   if (isInitialLoading) {
     return (
       <div className="mast-init"><i />Initializing</div>
@@ -73,8 +71,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--cream)', position: 'relative' }}>
       <header className="mast">
         <Link to="/" className="mast-brand" ref={brandRef}>
-          <b>JobPilot</b>
-          <span className="mast-hide">The Operator&rsquo;s Log</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+            <b>JobPilot</b>
+            <span className="mast-hide">The Operator&rsquo;s Log</span>
+          </div>
         </Link>
 
         {/* Mobile current section indicator */}
