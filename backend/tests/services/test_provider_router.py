@@ -33,7 +33,14 @@ class BrokenProvider:
 
 
 def capacity(provider, remaining):
-    return ProviderCapacity(provider, remaining, remaining, remaining)
+    return ProviderCapacity(
+        provider=provider,
+        minute_remaining=remaining,
+        daily_remaining=remaining,
+        weekly_remaining=remaining,
+        monthly_remaining=remaining,
+        lifetime_remaining=remaining,
+    )
 
 
 def test_provider_package_exports_are_authoritative():
@@ -151,3 +158,71 @@ def test_quota_read_failure_is_not_mapped_to_no_provider(monkeypatch):
     )
     with pytest.raises(ProviderRoutingUnavailable):
         route_provider(MagicMock())
+
+
+def test_exhausted_weekly_capacity_blocks_provider_and_routes_next(monkeypatch):
+    monkeypatch.setattr("app.services.provider_router.is_provider_enabled", lambda _: True)
+    monkeypatch.setattr("app.services.provider_router.create_provider", lambda _: ConfiguredProvider())
+
+    def custom_capacity(name):
+        if name == ProviderName.ADZUNA:
+            return ProviderCapacity(
+                provider=name,
+                minute_remaining=25,
+                daily_remaining=25,
+                weekly_remaining=0,
+                monthly_remaining=1000,
+                lifetime_remaining=None,
+            )
+        return capacity(name, 50)
+
+    monkeypatch.setattr(
+        "app.services.provider_router.get_provider_capacity",
+        lambda db, name, now: custom_capacity(name),
+    )
+    assert route_provider(MagicMock()).provider == ProviderName.JOOBLE
+
+
+def test_exhausted_monthly_capacity_blocks_provider_and_routes_next(monkeypatch):
+    monkeypatch.setattr("app.services.provider_router.is_provider_enabled", lambda _: True)
+    monkeypatch.setattr("app.services.provider_router.create_provider", lambda _: ConfiguredProvider())
+
+    def custom_capacity(name):
+        if name == ProviderName.ADZUNA:
+            return ProviderCapacity(
+                provider=name,
+                minute_remaining=25,
+                daily_remaining=25,
+                weekly_remaining=500,
+                monthly_remaining=0,
+                lifetime_remaining=None,
+            )
+        return capacity(name, 50)
+
+    monkeypatch.setattr(
+        "app.services.provider_router.get_provider_capacity",
+        lambda db, name, now: custom_capacity(name),
+    )
+    assert route_provider(MagicMock()).provider == ProviderName.JOOBLE
+
+
+def test_constrained_remaining_includes_weekly_and_monthly():
+    cap_weekly_lowest = ProviderCapacity(
+        provider=ProviderName.ADZUNA,
+        minute_remaining=25,
+        daily_remaining=20,
+        weekly_remaining=5,
+        monthly_remaining=50,
+        lifetime_remaining=None,
+    )
+    assert cap_weekly_lowest.constrained_remaining == 5
+
+    cap_monthly_lowest = ProviderCapacity(
+        provider=ProviderName.ADZUNA,
+        minute_remaining=25,
+        daily_remaining=20,
+        weekly_remaining=15,
+        monthly_remaining=2,
+        lifetime_remaining=None,
+    )
+    assert cap_monthly_lowest.constrained_remaining == 2

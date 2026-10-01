@@ -36,35 +36,53 @@ def get_db_mock(scalar_returns):
 
 def test_acquire_provider_request_slot_success():
     # A. Successful reservation
-    # For Adzuna: minute passes (1), daily passes (1), lifetime is skipped
-    db_mock = get_db_mock([1, 1])
+    # For Adzuna: lock is acquired, minute passes (1), daily passes (1), weekly passes (1), monthly passes (1), lifetime is skipped
+    db_mock = get_db_mock([1, 1, 1, 1])
     result = acquire_provider_request_slot(db_mock, "adzuna")
     assert result is True
     assert db_mock.commit.called
     assert not db_mock.rollback.called
-    assert db_mock.execute.call_count == 2
+    assert db_mock.execute.call_count == 5
 
 def test_acquire_provider_request_slot_minute_limit_exceeded():
     # B. Minute limit exceeded
-    # Adzuna: minute fails (return 26).
+    # Adzuna: lock acquired, minute fails (return 26).
     db_mock = get_db_mock([26])
     result = acquire_provider_request_slot(db_mock, "adzuna")
     assert result is False
     assert db_mock.rollback.called
     assert not db_mock.commit.called
-    # Only minute SQL should execute
-    assert db_mock.execute.call_count == 1
+    # Lock and minute SQL should execute
+    assert db_mock.execute.call_count == 2
 
 def test_acquire_provider_request_slot_daily_limit_exceeded():
     # C. Daily limit exceeded
-    # Adzuna: minute passes (1), daily fails (return 26).
+    # Adzuna: lock acquired, minute passes (1), daily fails (return 26).
     db_mock = get_db_mock([1, 26])
     result = acquire_provider_request_slot(db_mock, "adzuna")
     assert result is False
     assert db_mock.rollback.called
     assert not db_mock.commit.called
-    # Minute and daily executed
-    assert db_mock.execute.call_count == 2
+    # Lock, minute, and daily executed
+    assert db_mock.execute.call_count == 3
+
+def test_acquire_provider_request_slot_weekly_limit_exceeded():
+    # Adzuna: lock acquired, minute passes (1), daily passes (1), weekly fails (1001).
+    db_mock = get_db_mock([1, 1, 1001])
+    result = acquire_provider_request_slot(db_mock, "adzuna")
+    assert result is False
+    assert db_mock.rollback.called
+    assert not db_mock.commit.called
+    assert db_mock.execute.call_count == 4
+
+def test_acquire_provider_request_slot_monthly_limit_exceeded():
+    # Adzuna: lock acquired, minute passes (1), daily passes (1), weekly passes (1), monthly fails (2501).
+    db_mock = get_db_mock([1, 1, 1, 2501])
+    result = acquire_provider_request_slot(db_mock, "adzuna")
+    assert result is False
+    assert db_mock.rollback.called
+    assert not db_mock.commit.called
+    assert db_mock.execute.call_count == 5
 
 def test_acquire_provider_request_slot_lifetime_limit_exceeded():
     # D. Lifetime limit exceeded
@@ -74,17 +92,17 @@ def test_acquire_provider_request_slot_lifetime_limit_exceeded():
     assert result is False
     assert db_mock.rollback.called
     assert not db_mock.commit.called
-    # Daily and lifetime executed
+    # Daily and lifetime executed (no weekly/monthly lock for Jooble)
     assert db_mock.execute.call_count == 2
 
 def test_provider_with_no_lifetime_limit():
     # E. Provider with no lifetime limit
-    # Adzuna has no lifetime limit. Returns minute=1, daily=1.
-    db_mock = get_db_mock([1, 1])
+    # Adzuna has no lifetime limit. Returns minute=1, daily=1, weekly=1, monthly=1.
+    db_mock = get_db_mock([1, 1, 1, 1])
     result = acquire_provider_request_slot(db_mock, "adzuna")
     assert result is True
-    # Verify execute called twice (minute, daily) - no lifetime
-    assert db_mock.execute.call_count == 2
+    # Verify execute called 5 times (lock, minute, daily, weekly, monthly) - no lifetime
+    assert db_mock.execute.call_count == 5
 
 def test_provider_with_no_minute_limit():
     # F. Provider with no minute limit
@@ -94,6 +112,40 @@ def test_provider_with_no_minute_limit():
     assert result is True
     # Verify execute called twice (daily, lifetime) - no minute
     assert db_mock.execute.call_count == 2
+
+def test_acquire_provider_request_slot_non_positive_limits(monkeypatch):
+    db_mock = MagicMock()
+    from app.services.quota_policy import ProviderQuotaPolicy, QuotaDimensions
+
+    # Non-positive weekly
+    monkeypatch.setattr(
+        "app.services.quota_policy.get_provider_policy",
+        lambda name: ProviderQuotaPolicy(
+            provider_ceiling=QuotaDimensions(weekly=0)
+        ),
+    )
+    assert acquire_provider_request_slot(db_mock, "adzuna") is False
+    assert not db_mock.execute.called
+
+    # Non-positive monthly
+    monkeypatch.setattr(
+        "app.services.quota_policy.get_provider_policy",
+        lambda name: ProviderQuotaPolicy(
+            provider_ceiling=QuotaDimensions(monthly=0)
+        ),
+    )
+    assert acquire_provider_request_slot(db_mock, "adzuna") is False
+    assert not db_mock.execute.called
+
+    # Non-positive lifetime
+    monkeypatch.setattr(
+        "app.services.quota_policy.get_provider_policy",
+        lambda name: ProviderQuotaPolicy(
+            provider_ceiling=QuotaDimensions(lifetime=0)
+        ),
+    )
+    assert acquire_provider_request_slot(db_mock, "jooble") is False
+    assert not db_mock.execute.called
 
 def test_acquire_provider_request_slot_db_failure():
     # G. Database failure
