@@ -32,6 +32,8 @@ class Settings(BaseSettings):
 
     api_secret_key: str
     cycle_budget: int = 20
+    firecrawl_api_key: str | None = None
+    firecrawl_monthly_budget: int = 1000
 
     @field_validator('api_secret_key')
     @classmethod
