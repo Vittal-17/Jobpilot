@@ -177,13 +177,25 @@ class EnrichmentWorker:
                 fc_client = FirecrawlClient(settings.firecrawl_api_key)
                 markdown = fc_client.scrape(url)
 
-                if len(markdown) < 200:
-                    raise FirecrawlError("Firecrawl markdown too short, proxy likely blocked", status_code=200)
-
                 lower_md = markdown.lower()
                 anti_bot_markers = ["please enable cookies", "checking your browser", "enable javascript", "just a moment...", "access denied"]
                 if any(m in lower_md for m in anti_bot_markers):
                     raise FirecrawlError("Firecrawl markdown contains anti-bot markers", status_code=200)
+
+                redirect_markers = [
+                    "you are now being redirected",
+                    "you are being redirected",
+                    "if you are not redirected",
+                    "view ad here",
+                    "redirecting you to",
+                    "please wait while we redirect you",
+                    "please wait while you are redirected",
+                ]
+                if any(m in lower_md for m in redirect_markers):
+                    raise FirecrawlError("Firecrawl markdown contains redirect/interstitial markers", status_code=200)
+
+                if len(markdown) < 200:
+                    raise FirecrawlError("Firecrawl markdown too short, proxy likely blocked", status_code=200)
 
                 self.complete_success(db, job_id, token, markdown, source_execution_id)
 
@@ -205,6 +217,7 @@ class EnrichmentWorker:
                 update_enrichment_q = text("""
                     UPDATE job_enrichments SET
                         status = 'success',
+                        error_reason = NULL,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE job_id = :job_id
                       AND lease_token = :token
