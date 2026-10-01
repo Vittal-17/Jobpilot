@@ -88,28 +88,116 @@ class EnrichmentWorker:
             job_id, url, source_execution_id = row
             self.process_job(db, job_id, url, new_token, source_execution_id)
 
+    def _reserve_firecrawl_credit(self, _ignored_db: Session) -> bool:
+        from app.core.config import settings
+        if not settings.firecrawl_api_key or settings.firecrawl_monthly_budget <= 0:
+            return False
+
+        from app.db.database import SessionLocal
+        with SessionLocal() as local_db:
+            try:
+                stmt = text("""
+                    INSERT INTO provider_usage (provider_name, usage_date, request_count)
+                    VALUES ('firecrawl_monthly', DATE_TRUNC('month', CURRENT_DATE)::DATE, 1)
+                    ON CONFLICT (provider_name, usage_date)
+                    DO UPDATE SET request_count = provider_usage.request_count + 1
+                    WHERE provider_usage.request_count < :monthly_limit
+                    RETURNING request_count;
+                """)
+                res = local_db.execute(stmt, {"monthly_limit": settings.firecrawl_monthly_budget}).scalar()
+                local_db.commit()
+                return res is not None
+            except Exception as e:
+                logger.error(f"Failed to reserve Firecrawl credit: {e}")
+                local_db.rollback()
+                return False
+
+    def _sync_firecrawl_budget(self, _ignored_db: Session):
+        from app.core.config import settings
+        from app.db.database import SessionLocal
+        with SessionLocal() as local_db:
+            try:
+                stmt = text("""
+                    UPDATE provider_usage
+                    SET request_count = GREATEST(request_count, :monthly_limit)
+                    WHERE provider_name = 'firecrawl_monthly' AND usage_date = DATE_TRUNC('month', CURRENT_DATE)::DATE;
+                """)
+                local_db.execute(stmt, {"monthly_limit": settings.firecrawl_monthly_budget})
+                local_db.commit()
+            except Exception as e:
+                logger.error(f"Failed to sync Firecrawl budget: {e}")
+                local_db.rollback()
+
     def process_job(self, db: Session, job_id: int, url: str, token: str, source_execution_id: int | None = None):
+        fallback_reason = None
         try:
             response = self.ssrf_client.fetch(url)
             response.raise_for_status()
 
             full_text = extract_job_description(response.text)
-
             self.complete_success(db, job_id, token, full_text, source_execution_id)
+            return
 
         except SSRFViolation as e:
             logger.info(f"SSRF violation for job {job_id}, evaluating snippet natively.")
             self.complete_with_snippet(db, job_id, token, str(e), source_execution_id, unsupported=True)
+            return
+        except httpx.RequestError as e:
+            logger.info(f"Network RequestError for job {job_id}, retrying natively.")
+            self.complete_failure(db, job_id, token, str(e))
+            return
+        except httpx.HTTPStatusError as e:
+            status = e.response.status_code
+            if status in (404, 410):
+                self.complete_with_snippet(db, job_id, token, str(e), source_execution_id, unsupported=True)
+                return
+            elif status >= 500:
+                self.complete_failure(db, job_id, token, str(e))
+                return
+            else:
+                fallback_reason = f"HTTP {status}"
         except ExtractionError as e:
-            logger.info(f"Extraction error for job {job_id}, evaluating snippet natively.")
-            self.complete_with_snippet(db, job_id, token, str(e), source_execution_id, unsupported=True)
-        except httpx.HTTPError as e:
-            logger.info(f"Network error for job {job_id}, evaluating snippet natively.")
-            self.complete_with_snippet(db, job_id, token, str(e), source_execution_id, unsupported=True)
+            fallback_reason = str(e)
         except Exception as e:
             logger.warning(f"Scraping failed for job {job_id} ({e})")
             print(f"Exception in process_job: {e}")
             self.complete_failure(db, job_id, token, str(e))
+            return
+
+        if fallback_reason:
+            if not self._reserve_firecrawl_credit(db):
+                logger.info(f"Firecrawl budget exhausted or disabled. Snippet fallback for job {job_id}.")
+                self.complete_with_snippet(db, job_id, token, f"Fallback needed ({fallback_reason}) but budget exhausted", source_execution_id, unsupported=True)
+                return
+
+            try:
+                from app.core.config import settings
+                from app.services.scraper.firecrawl import FirecrawlClient, FirecrawlError
+
+                fc_client = FirecrawlClient(settings.firecrawl_api_key)
+                markdown = fc_client.scrape(url)
+
+                if len(markdown) < 200:
+                    raise FirecrawlError("Firecrawl markdown too short, proxy likely blocked", status_code=200)
+
+                lower_md = markdown.lower()
+                anti_bot_markers = ["please enable cookies", "checking your browser", "enable javascript", "just a moment...", "access denied"]
+                if any(m in lower_md for m in anti_bot_markers):
+                    raise FirecrawlError("Firecrawl markdown contains anti-bot markers", status_code=200)
+
+                self.complete_success(db, job_id, token, markdown, source_execution_id)
+
+            except FirecrawlError as e:
+                if e.status_code == 402:
+                    logger.error("Firecrawl returned 402 Payment Required. Syncing budget to ceiling.")
+                    self._sync_firecrawl_budget(db)
+                    self.complete_with_snippet(db, job_id, token, f"Firecrawl exhausted: {e}", source_execution_id, unsupported=True)
+                elif e.status_code is None or e.status_code in (408, 429) or e.status_code >= 500:
+                    self.complete_failure(db, job_id, token, f"Firecrawl transient error: {e}")
+                else:
+                    self.complete_with_snippet(db, job_id, token, f"Firecrawl content failure: {e}", source_execution_id, unsupported=True)
+            except Exception as e:
+                self.complete_with_snippet(db, job_id, token, f"Firecrawl unhandled error: {e}", source_execution_id, unsupported=True)
 
     def complete_success(self, db: Session, job_id: int, token: str, new_desc: str, source_execution_id: int | None = None):
         try:
