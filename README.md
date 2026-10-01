@@ -87,7 +87,7 @@ The production topology separates edge routing, presentation, API state, backgro
                ┌───────────────────────────────┐
                │       Enrichment Worker       │ (CLI process)
                │ - Row-level leased claims     │
-               │ - SSRF-safe scraping client   │
+               │ - SSRF + Firecrawl fallback   │
                │ - Match score persistence     │
                └───────────────────────────────┘
 ```
@@ -111,7 +111,7 @@ The production topology separates edge routing, presentation, API state, backgro
 | **Auth Gateway** | Python 3.12, FastAPI, Jinja2, [auth-gateway/main.py](file:///home/vittal/Projects/jobpilot/Jobpilot/auth-gateway/main.py) | Caddy `forward_auth` endpoint, HMAC-SHA256 session cookies, bcrypt password verification, failed-attempt rate limiting per IP on login. |
 | **Core API** | Python 3.12, [FastAPI](file:///home/vittal/Projects/jobpilot/Jobpilot/backend/app/main.py), SQLAlchemy 2.0, Pydantic v2 | Canonical domain models, quota enforcement, candidate selection, matching, internal orchestration endpoints. |
 | **Database** | PostgreSQL 16 Alpine, [Alembic](file:///home/vittal/Projects/jobpilot/Jobpilot/backend/alembic.ini) | Multi-database isolation (`jobpilot`, `n8n_data`), atomic constraints, row-level locks (`SKIP LOCKED`). |
-| **Enrichment** | Python 3.12 CLI ([app/services/enrichment_worker.py](file:///home/vittal/Projects/jobpilot/Jobpilot/backend/app/services/enrichment_worker.py)) | Asynchronous scraping worker, lease token handling, SSRF IP filtering, full-text parsing, score persistence. |
+| **Enrichment** | Python 3.12 CLI ([app/services/enrichment_worker.py](file:///home/vittal/Projects/jobpilot/Jobpilot/backend/app/services/enrichment_worker.py)) | Asynchronous scraping worker, lease token handling, SSRF IP filtering, Firecrawl scraping fallback with monthly credit quotas, full-text parsing, score persistence. |
 | **Automation** | [n8n 2.38.1](file:///home/vittal/Projects/jobpilot/Jobpilot/docker-compose.production.yml) | External scheduler hosting workflow definitions for search cycle loops and Telegram notification delivery (shipped inactive; require runtime activation). |
 
 ---
@@ -135,13 +135,16 @@ JobPilot enforces a three-tier access model:
 The search selection engine ([app/services/search_selector.py](file:///home/vittal/Projects/jobpilot/Jobpilot/backend/app/services/search_selector.py)) deterministically decides which search variant to run next. It reconciles:
 - Static domain taxonomy defined in [app/domain/taxonomy.py](file:///home/vittal/Projects/jobpilot/Jobpilot/backend/app/domain/taxonomy.py) (canonical engineering roles and locations).
 - Dynamic operator-configured search vectors stored in the `user_searches` table.
-- Starvation penalties, query variant cycling, and cooldown periods.
-- Search intent claim creation in the `search_execution` table (`status = 'selected'`).
+- Active user demand prioritization: boosts candidates matching active operator search queries and profile preferred roles and locations.
+- Variant quality telemetry: tracks outcomes per variant (`UNTRIED`, `UNKNOWN` 1-day retry cooldown, `NO_INVENTORY` 7-day penalty, `NO_FRESHER` 7-day penalty, and `PRODUCTIVE` with Beta-smoothed utility exploitation).
+- Adaptive retrieval scope: fail-closed drought detection broadens granular Bangalore locations to canonical `"Bengaluru"` only when all variants are verified `NO_INVENTORY`.
+- Deterministic fallback: rotates through penalized variants oldest-attempt-first (`min(id)`).
+- Search intent claim creation (`status = 'selected'`) and automated abandoned claim recovery (reclaiming both stale `selected` and stale `started` executions exceeding the 15-minute lease boundary to `failed`).
 
 ### 2. Provider Routing & Quota Accounting
 Before any external API call is initiated, the provider router ([app/services/provider_router.py](file:///home/vittal/Projects/jobpilot/Jobpilot/backend/app/services/provider_router.py)) selects an upstream provider:
-- **Routing Order & Precedence**: Evaluates configured and enabled providers in priority order (`adzuna`, then `jooble`). A provider is selected only if its flag is enabled (`ADZUNA_ENABLED` / `JOOBLE_ENABLED`), its credentials are configured, and it possesses remaining quota capacity across minute, daily, and lifetime dimensions. If all enabled providers are exhausted, the cycle yields `daily_provider_budget_exhausted`.
-- **Atomic Pre-emption**: Quota slots are committed to PostgreSQL *before* issuing any network request.
+- **Routing Order & Precedence**: Evaluates configured and enabled providers in priority order (`adzuna`, then `jooble`). A provider is selected only if its flag is enabled (`ADZUNA_ENABLED` / `JOOBLE_ENABLED`), its credentials are configured, and it possesses remaining quota capacity across minute, daily, weekly, monthly, and lifetime dimensions. If all enabled providers are exhausted, the cycle yields `daily_provider_budget_exhausted`.
+- **Atomic Pre-emption**: Quota slots are committed to PostgreSQL *before* issuing any network request. Multi-day windows (`weekly`, `monthly`) utilize PostgreSQL advisory transaction locks (`pg_advisory_xact_lock`) to serialize concurrent checks per provider.
 - **Fail-Safe Policy**: If the external provider returns an error, the quota remains consumed to prevent unbounded retry loops from draining upstream credit pools during provider outages.
 
 ### 3. Normalization & Ingestion
@@ -164,12 +167,16 @@ Jobs processed for recommendation pass through the deterministic eligibility gat
 - **Numeric Experience Bounds**: Authoritatively rejects postings specifying $>1$ year of required experience; permits explicit $0\text{--}1$ year requirements.
 - **Role Signals**: Recognizes fresher, entry-level, graduate, junior, and internship positions.
 - **Fail-Closed Snippet Provenance**: When evaluating truncated snippets (`description_is_snippet = True`), description-derived positive signals are ignored unless confirmed in the authoritative title.
+- **Company & History Disambiguation**: Distinguishes employer background, company founding years, collective team experience, and client track records from candidate requirements, preventing false rejections on business longevity unless applicant-governing signals apply.
+- **Tightened Graduate & Trainee Scope**: Rejects administrative, operational, or recruiting positions merely targeting graduate/trainee audiences (e.g. `graduate recruiter`, `trainee program coordinator`), focusing strictly on legitimate entry-level vacancies.
 
 ### 6. Asynchronous Enrichment & SSRF Defense
 Listings that enter the database with truncated snippet descriptions enqueue a row in `job_enrichments`. The standalone worker ([app/services/enrichment_worker.py](file:///home/vittal/Projects/jobpilot/Jobpilot/backend/app/services/enrichment_worker.py)) processes them:
 - **Concurrency & Leases**: Claims pending tasks in batches using `FOR UPDATE SKIP LOCKED` with a lease expiration token.
 - **SSRF Defense**: The [SSRFClient](file:///home/vittal/Projects/jobpilot/Jobpilot/backend/app/services/scraper/ssrf.py) blocks access to private subnets (RFC 1918), loopback addresses, link-local IPs, and cloud metadata endpoints (`169.254.169.254`).
-- **Snippet Fallback**: If scraping encounters an SSRF block or extraction failure, the worker calls `complete_with_snippet` to evaluate the job using its snippet rather than abandoning score evaluation.
+- **Firecrawl Scraper Fallback**: When native fetching encounters non-terminal failures (HTTP 403, 401, 429) or extraction errors, the worker falls back to Firecrawl scraping (`FirecrawlClient`). Firecrawl requests atomically reserve credits against PostgreSQL `provider_usage` under `firecrawl_monthly` bounded by `FIRECRAWL_MONTHLY_BUDGET`.
+- **Anti-Bot & Redirect Interstitial Rejection**: Scraped markdown is checked for anti-bot barriers ("checking your browser", "enable cookies"), redirect/interstitial wrappers ("you are now being redirected", "view ad here"), and length thresholds (<200 chars). Detections fail closed to prevent corrupted descriptions.
+- **Graceful Snippet Fallback**: If scraping encounters an SSRF block, 404/410 errors, budget exhaustion, or content validation rejections, the worker calls `complete_with_snippet` (status `unsupported`) to evaluate the job using its snippet rather than abandoning score evaluation.
 
 ### 7. Deterministic Match Scoring
 Scoring in [app/services/matching_service.py](file:///home/vittal/Projects/jobpilot/Jobpilot/backend/app/services/matching_service.py) evaluates a candidate job against configured operator preferences across up to five independent dimensions:
@@ -250,7 +257,7 @@ The repository enforces automated validation across two GitHub Actions workflows
 │  - Spin up PostgreSQL 16 Alpine service container         │
 │  - Install dependencies from backend/requirements-dev.lock│
 │  - Apply Alembic migrations (alembic upgrade head)        │
-│  - Run 445 unit & integration tests with Pytest           │
+│  - Run 503 unit & integration tests with Pytest           │
 │  - Validate Frontend (npm ci, oxlint, tsc -b, vite build) │
 └─────────────────────────────┬─────────────────────────────┘
                               │ Passed
@@ -350,7 +357,7 @@ API_SECRET_KEY="<key_min_16_chars>" \
 PYTHONPATH=backend:auth-gateway python -m pytest tests/ backend/tests/ -q
 cd auth-gateway && PYTHONPATH=. python -m pytest tests/ -q
 ```
-*(Release certification result: 470 passed, 0 failed, 2 warnings).*
+*(Release certification result: 503 passed in the backend/integration test suite, 20 passed in auth-gateway tests; 523 passed total.*
 
 ### Executing Frontend Validation
 ```bash
@@ -392,6 +399,8 @@ Complete inventory of environment variables declared in [.env.example](file:///h
 | `BACKUP_S3_ACCESS_KEY` | Backups | Object storage access key for offsite backups | Optional |
 | `BACKUP_S3_SECRET_KEY` | Backups | Object storage secret key for offsite backups | Optional |
 | `TELEGRAM_CHAT_ID` | Telegram | Target chat/channel ID for n8n notifications | Optional |
+| `FIRECRAWL_API_KEY` | Scraper | Firecrawl API key (`https://api.firecrawl.dev`) for scraping fallback | Optional if disabled |
+| `FIRECRAWL_MONTHLY_BUDGET` | Scraper | Monthly credit budget for Firecrawl scraping fallback | Optional (Default: `1000`) |
 
 ---
 
