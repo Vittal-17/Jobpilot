@@ -392,3 +392,162 @@ def test_default_is_snippet_fail_closed():
     assert is_fresher_eligible("Software Engineer", "3+ years required") is False
     # Authoritative title still succeeds when is_snippet is omitted
     assert is_fresher_eligible("Junior Software Engineer", "We are hiring") is True
+
+
+def test_company_and_history_prose_does_not_falsely_reject():
+    """Regression: numeric experience statements describing company, team, client,
+
+    or market history must not falsely reject legitimate fresher positions.
+    """
+    cases = [
+        # Fresher title + company history/team experience
+        ("Junior Software Engineer", "About Us: We are a leading tech company. Our company has 10+ years of experience delivering cloud solutions to our clients.", True),
+        ("Junior Software Engineer", "We have 15+ years of experience in enterprise systems. Join our team.", True),
+        ("Junior Backend Developer", "Our team brings 8+ years of experience to every project.", True),
+        ("Junior Developer", "Our founders have 20+ years of combined experience across fintech.", True),
+        ("Junior Python Developer", "With over 12 years of experience in AI, our company has built modern platforms.", True),
+        ("Junior Developer", "Founded 15 years ago, we have been serving clients for over 10 years.", True),
+        ("Junior Engineer", "We have 10 years of history in web development.", True),
+        ("Junior Software Engineer", "In business for 15+ years across Europe.", True),
+        ("Junior Software Engineer", "With 20+ years in the market, we provide robust payment solutions.", True),
+        ("Junior Software Engineer", "Our platform has been operating for 8+ years.", True),
+        ("Junior Software Engineer", "Over the past 10 years, our company has grown to 500 engineers.", True),
+        # Explicit declarations + company experience
+        ("Software Engineer", "Our company has 10+ years of experience. Freshers can apply.", True),
+        ("Software Engineer", "Our team has 15+ years of combined experience. No experience required.", True),
+        ("Software Engineer", "We have 12 years of history. Freshers are welcome to apply.", True),
+        ("Software Engineer", "Serving clients for 10+ years. 0-1 years of experience required.", True),
+        # Legitimate graduate/intern titles + company experience
+        ("Graduate Software Engineer", "Our company has 10+ years of experience in healthcare IT.", True),
+        ("Graduate Engineer", "With over 15 years of experience in the cloud, our team has built award-winning products.", True),
+        ("Python Backend Developer Intern", "Our company has 10+ years of experience.", True),
+        ("Junior Software Engineer", "With 20 years in business, we are a leading platform.", True),
+        ("Software Engineer", "With 20 years in business, candidates must have 0-1 years of experience.", True),
+    ]
+    for title, desc, expected in cases:
+        assert is_fresher_eligible(title, desc, is_snippet=False) == expected, f"Failed: {title} | {desc} (Expected {expected})"
+
+
+def test_adversarial_company_prose_with_genuine_candidate_requirements():
+    """Adversarial: genuine candidate requirements >1 year must still reject even
+
+    when company, team, client, or history experience is also present in the same clause.
+    """
+    cases = [
+        # Same-clause constructions: company/history prose + candidate requirement
+        ("Software Engineer", "With 20 years in business, candidates must have 3+ years of experience.", False),
+        ("Junior Software Engineer", "With 20 years in business, candidates must have 3+ years of experience.", False),
+        ("Software Engineer", "With 20 years in business, 3+ years of experience is required.", False),
+        ("Junior Developer", "With 20 years in business, 3+ years of experience is required.", False),
+        ("Junior Software Engineer", "With 20 years in business, 3+ years preferred.", False),
+        ("Junior Developer", "Having 15 years in business, we require 2+ years of experience.", False),
+        ("Software Engineer", "With 10 years of history, 2+ years of experience is required.", False),
+        ("Junior Engineer", "With 10 years of history, 2+ years of experience is required.", False),
+        ("Software Engineer", "Candidates with 3+ years of experience are encouraged to apply to our company with 20 years in business.", False),
+        ("Junior Software Engineer", "Operating for over 10 years, minimum 2 years experience needed.", False),
+        # Fresher role but candidate requirement >1 year present
+        ("Junior Software Engineer", "Our company has 10+ years of experience. Candidate must have 3+ years in Python.", False),
+        ("Junior Software Engineer", "Our team has 15+ years of experience. Requires 2-4 yrs experience.", False),
+        ("Junior Developer", "We have 10 years of history. 2+ years of experience required.", False),
+        ("Junior Developer", "Founded 20 years ago. Minimum 3 years experience required.", False),
+        ("Software Engineer", "Our company has 10+ years of experience, but requires 3+ years of experience.", False),
+        ("Software Engineer", "Our company has 10+ years of experience and is looking for a candidate with 2+ years of experience.", False),
+        ("Software Engineer", "We have 10+ years of experience. Freshers can apply, but 3+ years required.", False),
+        ("Graduate Engineer", "Our team brings 12+ years of experience. 2+ years preferred.", False),
+        ("Software Engineering Intern", "Company with 15+ years of experience. At least 2 years required.", False),
+        # Candidate requirements mentioning industry/domain
+        ("Software Engineer", "Candidate must have 2+ years of experience in the software industry.", False),
+        ("Junior Developer", "Requires 3+ years in the fintech industry.", False),
+        ("Backend Developer", "Must have 2-4 years of experience in the market.", False),
+        ("Frontend Developer", "3+ years of hands-on experience required.", False),
+        ("Software Engineer", "At least 2 years of relevant experience.", False),
+    ]
+    for title, desc, expected in cases:
+        assert is_fresher_eligible(title, desc, is_snippet=False) == expected, f"Failed: {title} | {desc} (Expected {expected})"
+
+
+def test_company_prose_alone_on_unspecified_role_fails_closed():
+    """Verify that company experience alone does not qualify an ambiguous mid-level role."""
+    cases = [
+        ("Software Engineer", "Our company has 10+ years of experience.", False),
+        ("Software Engineer", "We have 15+ years of experience in fintech.", False),
+        ("Software Engineer", "Our team brings 20+ years of combined experience.", False),
+        ("Software Engineer", "Serving clients for over 10 years.", False),
+        ("Software Engineer", "Founded 20 years ago.", False),
+    ]
+    for title, desc, expected in cases:
+        assert is_fresher_eligible(title, desc, is_snippet=False) == expected, f"Failed: {title} | {desc} (Expected {expected})"
+
+
+def test_tightened_graduate_roles():
+    """Verify that legitimate graduate-level positions qualify."""
+    cases = [
+        ("Graduate Software Engineer", "Join our engineering team.", True),
+        ("Graduate Engineer", "Develop distributed systems.", True),
+        ("Graduate Developer", "Work with React and Node.", True),
+        ("Graduate Frontend Developer", "Build responsive UIs.", True),
+        ("Graduate Backend Developer", "Build scalable APIs.", True),
+        ("Graduate Full Stack Developer", "Full stack development.", True),
+        ("Graduate Python Developer", "Write clean Python code.", True),
+        ("Graduate Data Analyst", "Analyze product metrics.", True),
+        ("Graduate Data Scientist", "Build ML models.", True),
+        ("Graduate Engineering Trainee", "Rotational engineering program.", True),
+        ("Graduate Technical Trainee", "Technical development track.", True),
+        ("Graduate Trainee", "Fast-track career development.", True),
+        ("Graduate Associate", "Associate consultant track.", True),
+        ("Graduate Apprentice", "Apprenticeship scheme.", True),
+        ("Software Engineer Graduate", "Fresh out of university.", True),
+        ("Developer Graduate", "Start your software career.", True),
+        ("Open Role", "Position: Graduate Software Engineer\nLocation: London", True),
+        ("Hiring", "Role: Graduate Developer\nTeam: Platform", True),
+        ("Graduate Program - Software Engineer", "Rotational software track.", True),
+        ("Graduate Scheme: Python Developer", "Developer scheme.", True),
+    ]
+    for title, desc, expected in cases:
+        assert is_fresher_eligible(title, desc, is_snippet=False) == expected, f"Failed: {title} | {desc} (Expected {expected})"
+
+
+def test_graduate_audience_program_and_admin_rejections():
+    """Verify that generic audience, educational qualifications, standalone programs,
+
+    and administrative graduate-facing roles do NOT qualify by themselves.
+    """
+    cases = [
+        # Generic audience / education
+        ("Python Developer - Any Graduate", "Build web apps.", False),
+        ("Software Engineer (Any Graduate)", "Full time position.", False),
+        ("Any Graduate", "Looking for talented individuals.", False),
+        ("Any Graduate - Software Developer", "Immediate opening.", False),
+        ("All Graduates", "Apply now.", False),
+        ("Post Graduate Software Engineer", "Post graduate required.", False),
+        # Standalone programs / recruitment without a role
+        ("Graduate Hiring Program", "Join our annual cohort.", False),
+        ("Graduate Recruitment", "Apply for upcoming cycle.", False),
+        ("Graduate Recruitment 2025", "Campus recruitment drive.", False),
+        ("Graduate Scheme 2025", "Applications open.", False),
+        ("Graduate Program", "Explore our programs.", False),
+        # Administrative / recruitment / HR roles
+        ("Graduate Recruiter", "Manage university hiring pipelines.", False),
+        ("Graduate Program Coordinator", "Coordinate intern and graduate programs.", False),
+        ("Graduate Program Administrator", "Administer onboarding.", False),
+        ("Graduate Program Manager", "Lead graduate talent strategy.", False),
+        ("Graduate Admissions Specialist", "Review admissions files.", False),
+        ("Graduate Talent Acquisition Specialist", "Drive campus hiring.", False),
+        ("Graduate Recruitment Consultant", "Source early career candidates.", False),
+        ("Coordinator for Graduates", "Manage program schedules.", False),
+    ]
+    for title, desc, expected in cases:
+        assert is_fresher_eligible(title, desc, is_snippet=False) == expected, f"Failed: {title} | {desc} (Expected {expected})"
+
+
+def test_trainee_roles():
+    """Verify trainee roles qualify and trainee admin roles reject."""
+    cases = [
+        ("Trainee Software Engineer", "Learn and build.", True),
+        ("Trainee Developer", "Python development.", True),
+        ("Management Trainee", "Leadership development.", True),
+        ("Trainee Program Coordinator", "Coordinate trainees.", False),
+        ("Coordinator for Trainees", "Manage trainee schedules.", False),
+    ]
+    for title, desc, expected in cases:
+        assert is_fresher_eligible(title, desc, is_snippet=False) == expected, f"Failed: {title} | {desc} (Expected {expected})"
