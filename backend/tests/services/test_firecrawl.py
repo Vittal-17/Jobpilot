@@ -9,6 +9,16 @@ from app.services.scraper.firecrawl import FirecrawlError
 import httpx
 from app.core.config import settings
 
+@pytest.fixture(autouse=True)
+def restore_settings():
+    orig_key = settings.firecrawl_api_key
+    orig_budget = settings.firecrawl_monthly_budget
+    try:
+        yield
+    finally:
+        settings.firecrawl_api_key = orig_key
+        settings.firecrawl_monthly_budget = orig_budget
+
 @pytest.fixture
 def mock_db():
     db = MagicMock()

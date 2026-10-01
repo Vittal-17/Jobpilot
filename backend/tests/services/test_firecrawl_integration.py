@@ -25,9 +25,15 @@ def clear_db():
 
 @pytest.fixture(autouse=True)
 def run_around_tests():
+    orig_key = settings.firecrawl_api_key
+    orig_budget = settings.firecrawl_monthly_budget
     clear_db()
-    yield
-    clear_db()
+    try:
+        yield
+    finally:
+        settings.firecrawl_api_key = orig_key
+        settings.firecrawl_monthly_budget = orig_budget
+        clear_db()
 
 def test_quota_atomicity_and_persistence():
     settings.firecrawl_api_key = "test_key"

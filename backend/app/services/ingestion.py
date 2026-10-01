@@ -88,8 +88,26 @@ def acquire_provider_request_slot(
     db: Session,
     provider_name: str,
     reference_time: datetime | None = None,
+    cost_units: int = 1,
 ) -> bool:
     """Acquires a quota slot atomically. Returns True if request is allowed, False if over limit."""
+    if cost_units <= 0:
+        logger.warning(
+            "Non-positive cost_units=%s requested for provider %s, blocking reservation.",
+            cost_units,
+            provider_name,
+        )
+        return False
+
+    if provider_name in ("firecrawl", "firecrawl_monthly"):
+        from app.core.config import settings
+        if not getattr(settings, "firecrawl_enabled", True):
+            logger.warning("Firecrawl is disabled, blocking reservation.")
+            return False
+        if not getattr(settings, "firecrawl_api_key", None):
+            logger.warning("Firecrawl API key is not configured, blocking reservation.")
+            return False
+
     from app.services.quota_policy import get_provider_policy
 
     try:
@@ -130,20 +148,47 @@ def acquire_provider_request_slot(
 
     try:
         with Session(db.get_bind()) as quota_db:
-            if weekly_limit is not None or monthly_limit is not None:
+            lock_key = "firecrawl" if provider_name in ("firecrawl", "firecrawl_monthly") else provider_name
+            if weekly_limit is not None or monthly_limit is not None or provider_name in ("firecrawl", "firecrawl_monthly"):
                 quota_db.execute(
                     text("SELECT pg_advisory_xact_lock(hashtext('provider_quota'), hashtext(:p))"),
-                    {"p": provider_name},
+                    {"p": lock_key},
                 )
+
+            if provider_name in ("firecrawl", "firecrawl_monthly"):
+                stmt_monthly_check = text("""
+                    SELECT COALESCE(SUM(request_count), 0)
+                    FROM provider_usage
+                    WHERE provider_name IN ('firecrawl', 'firecrawl_monthly')
+                      AND usage_date >= CAST(DATE_TRUNC('month', CAST(:d AS date)) AS date)
+                      AND usage_date < CAST(DATE_TRUNC('month', CAST(:d AS date)) + INTERVAL '1 month' AS date)
+                """)
+                current_monthly = quota_db.execute(stmt_monthly_check, {"d": today}).scalar() or 0
+                if monthly_limit is not None and current_monthly + cost_units > monthly_limit:
+                    quota_db.rollback()
+                    return False
+
+                target_date = today.replace(day=1) if provider_name == "firecrawl_monthly" else today
+                stmt_firecrawl_record = text("""
+                    INSERT INTO provider_usage (provider_name, usage_date, request_count)
+                    VALUES (:p, :d, :cost)
+                    ON CONFLICT (provider_name, usage_date)
+                    DO UPDATE SET request_count = provider_usage.request_count + :cost
+                    RETURNING request_count
+                """)
+                quota_db.execute(stmt_firecrawl_record, {"p": provider_name, "d": target_date, "cost": cost_units})
+                quota_db.commit()
+                return True
+
             if minute_limit is not None:
                 stmt_minute = text("""
                     INSERT INTO provider_minute_usage (provider_name, usage_minute, request_count)
-                    VALUES (:p, :m, 1)
+                    VALUES (:p, :m, :cost)
                     ON CONFLICT (provider_name, usage_minute)
-                    DO UPDATE SET request_count = provider_minute_usage.request_count + 1
+                    DO UPDATE SET request_count = provider_minute_usage.request_count + :cost
                     RETURNING request_count
                 """)
-                res_minute = quota_db.execute(stmt_minute, {"p": provider_name, "m": current_minute}).scalar()
+                res_minute = quota_db.execute(stmt_minute, {"p": provider_name, "m": current_minute, "cost": cost_units}).scalar()
                 if res_minute > minute_limit:
                     quota_db.rollback()
                     return False
@@ -151,12 +196,12 @@ def acquire_provider_request_slot(
             if daily_limit is not None or weekly_limit is not None or monthly_limit is not None:
                 stmt = text("""
                     INSERT INTO provider_usage (provider_name, usage_date, request_count)
-                    VALUES (:p, :d, 1)
+                    VALUES (:p, :d, :cost)
                     ON CONFLICT (provider_name, usage_date)
-                    DO UPDATE SET request_count = provider_usage.request_count + 1
+                    DO UPDATE SET request_count = provider_usage.request_count + :cost
                     RETURNING request_count
                 """)
-                res_daily = quota_db.execute(stmt, {"p": provider_name, "d": today}).scalar()
+                res_daily = quota_db.execute(stmt, {"p": provider_name, "d": today, "cost": cost_units}).scalar()
                 if daily_limit is not None and res_daily > daily_limit:
                     quota_db.rollback()
                     return False
@@ -190,12 +235,12 @@ def acquire_provider_request_slot(
             if lifetime_limit is not None:
                 stmt_lifetime = text("""
                     INSERT INTO provider_state (provider_name, lifetime_count)
-                    VALUES (:p, 1)
+                    VALUES (:p, :cost)
                     ON CONFLICT (provider_name)
-                    DO UPDATE SET lifetime_count = provider_state.lifetime_count + 1
+                    DO UPDATE SET lifetime_count = provider_state.lifetime_count + :cost
                     RETURNING lifetime_count
                 """)
-                res_lifetime = quota_db.execute(stmt_lifetime, {"p": provider_name}).scalar()
+                res_lifetime = quota_db.execute(stmt_lifetime, {"p": provider_name, "cost": cost_units}).scalar()
                 if res_lifetime > lifetime_limit:
                     quota_db.rollback()
                     return False

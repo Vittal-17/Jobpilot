@@ -90,37 +90,27 @@ class EnrichmentWorker:
 
     def _reserve_firecrawl_credit(self, _ignored_db: Session) -> bool:
         from app.core.config import settings
-        if not settings.firecrawl_api_key or settings.firecrawl_monthly_budget <= 0:
+        if not getattr(settings, "firecrawl_enabled", True) or not settings.firecrawl_api_key or settings.firecrawl_monthly_budget <= 0:
             return False
 
+        from app.services.ingestion import acquire_provider_request_slot
         from app.db.database import SessionLocal
         with SessionLocal() as local_db:
-            try:
-                stmt = text("""
-                    INSERT INTO provider_usage (provider_name, usage_date, request_count)
-                    VALUES ('firecrawl_monthly', DATE_TRUNC('month', CURRENT_DATE)::DATE, 1)
-                    ON CONFLICT (provider_name, usage_date)
-                    DO UPDATE SET request_count = provider_usage.request_count + 1
-                    WHERE provider_usage.request_count < :monthly_limit
-                    RETURNING request_count;
-                """)
-                res = local_db.execute(stmt, {"monthly_limit": settings.firecrawl_monthly_budget}).scalar()
-                local_db.commit()
-                return res is not None
-            except Exception as e:
-                logger.error(f"Failed to reserve Firecrawl credit: {e}")
-                local_db.rollback()
-                return False
+            return acquire_provider_request_slot(local_db, "firecrawl_monthly", cost_units=1)
 
     def _sync_firecrawl_budget(self, _ignored_db: Session):
         from app.core.config import settings
         from app.db.database import SessionLocal
         with SessionLocal() as local_db:
             try:
+                local_db.execute(
+                    text("SELECT pg_advisory_xact_lock(hashtext('provider_quota'), hashtext('firecrawl'))")
+                )
                 stmt = text("""
-                    UPDATE provider_usage
-                    SET request_count = GREATEST(request_count, :monthly_limit)
-                    WHERE provider_name = 'firecrawl_monthly' AND usage_date = DATE_TRUNC('month', CURRENT_DATE)::DATE;
+                    INSERT INTO provider_usage (provider_name, usage_date, request_count)
+                    VALUES ('firecrawl_monthly', DATE_TRUNC('month', CURRENT_DATE)::DATE, :monthly_limit)
+                    ON CONFLICT (provider_name, usage_date)
+                    DO UPDATE SET request_count = GREATEST(provider_usage.request_count, :monthly_limit);
                 """)
                 local_db.execute(stmt, {"monthly_limit": settings.firecrawl_monthly_budget})
                 local_db.commit()

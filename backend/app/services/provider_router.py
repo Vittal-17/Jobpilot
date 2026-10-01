@@ -114,6 +114,12 @@ def get_provider_capacity(
         ),
         "monthly": (
             "SELECT COALESCE(SUM(request_count), 0) FROM provider_usage "
+            "WHERE provider_name IN ('firecrawl', 'firecrawl_monthly') "
+            "AND usage_date >= CAST(DATE_TRUNC('month', CAST(:bucket AS date)) AS date) "
+            "AND usage_date < CAST(DATE_TRUNC('month', CAST(:bucket AS date)) + INTERVAL '1 month' AS date)"
+            if getattr(provider_name, "value", str(provider_name)) in ("firecrawl", "firecrawl_monthly")
+            else
+            "SELECT COALESCE(SUM(request_count), 0) FROM provider_usage "
             "WHERE provider_name = :provider "
             "AND usage_date >= CAST(DATE_TRUNC('month', CAST(:bucket AS date)) AS date) "
             "AND usage_date < CAST(DATE_TRUNC('month', CAST(:bucket AS date)) + INTERVAL '1 month' AS date)",

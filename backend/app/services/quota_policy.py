@@ -37,5 +37,13 @@ def get_provider_policy(provider_name: str) -> ProviderQuotaPolicy:
             account_ceiling=QuotaDimensions(lifetime=settings.jooble_account_limit_lifetime),
             safety_budget=QuotaDimensions(daily=settings.jooble_safety_budget_daily, lifetime=settings.jooble_safety_budget_lifetime)
         )
+    elif provider_name in ("firecrawl", "firecrawl_monthly"):
+        return ProviderQuotaPolicy(
+            provider_ceiling=QuotaDimensions(monthly=settings.firecrawl_monthly_budget),
+            account_ceiling=QuotaDimensions(monthly=settings.firecrawl_monthly_budget),
+            safety_budget=QuotaDimensions(
+                monthly=min(settings.firecrawl_monthly_automation_cap, settings.firecrawl_monthly_budget)
+            )
+        )
     else:
         raise ValueError(f"Unknown provider: {provider_name}")
