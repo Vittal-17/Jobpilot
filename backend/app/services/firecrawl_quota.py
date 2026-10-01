@@ -1,9 +1,15 @@
-"""Firecrawl quota observability and budget state helper."""
+import math
 from datetime import datetime, timezone
 from typing import Any
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.core.config import settings
+
+def calculate_search_credits(limit: int = 10) -> int:
+    """Calculate Firecrawl Search credit cost: 2 credits per 10 results, rounded up."""
+    if limit <= 0:
+        return 2
+    return max(2, math.ceil(limit / 10) * 2)
 
 def get_firecrawl_budget_state(db: Session, reference_time: datetime | None = None) -> dict[str, Any]:
     """Returns current month's Firecrawl credit consumption, remaining automation credits, and reserve metrics."""

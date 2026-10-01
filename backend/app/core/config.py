@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     firecrawl_monthly_budget: int = 1000
     firecrawl_monthly_automation_cap: int = 900
     firecrawl_reserved_credits: int = 100
+    firecrawl_discovery_enabled: bool = False
+    firecrawl_discovery_max_queries_per_run: int = 2
+    firecrawl_discovery_max_results_per_query: int = 10
+    firecrawl_discovery_max_credits_per_run: int = 20
+    firecrawl_enrichment_max_credits_per_run: int = 10
 
     @field_validator('api_secret_key')
     @classmethod

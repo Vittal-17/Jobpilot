@@ -281,11 +281,20 @@ def run_ingestion(db: Session, provider_name: str, provider: JobProvider, query:
         if hasattr(provider, "validate_config"):
             provider.validate_config()
 
-        if not acquire_provider_request_slot(db, provider_name):
-            logger.warning("Provider %s has no remaining request quota", provider_name)
+        prov_key = provider_name.value if hasattr(provider_name, "value") else str(provider_name)
+        if prov_key in ("firecrawl", "firecrawl_monthly"):
+            from app.services.firecrawl_quota import calculate_search_credits
+            limit = getattr(query, "page_size", 10) or 10
+            cost_units = calculate_search_credits(limit)
+            slot_acquired = acquire_provider_request_slot(db, prov_key, cost_units=cost_units)
+        else:
+            slot_acquired = acquire_provider_request_slot(db, prov_key)
+
+        if not slot_acquired:
+            logger.warning("Provider %s has no remaining request quota", prov_key)
             if execution_id is not None:
                 _fail_execution(db, execution_id, "Rate limit exceeded")
-            raise RateLimitExceeded(f"Limit exceeded for {provider_name}")
+            raise RateLimitExceeded(f"Limit exceeded for {prov_key}")
 
         jobs = provider.search_jobs(query)
     except ProviderConfigurationError:
