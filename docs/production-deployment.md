@@ -7,19 +7,23 @@ The production architecture for JobPilot is designed to run securely on a constr
 ```
 Internet
   ↓ TCP 80/443
-Caddy (Reverse Proxy, TLS)
-  ↓ [frontend Docker network]
-n8n (Orchestration)
-  ↓ [backend Docker network]
-FastAPI (Business Logic)
-  ↓ [backend Docker network]
-PostgreSQL (Source of Truth)
+Caddy 2.8 (Reverse Proxy, TLS)
+  ├─ {$DOMAIN}/ → Frontend SPA (Port 80)
+  ├─ {$DOMAIN}/api/* → FastAPI (Port 8000, handle_path strips /api)
+  ├─ {$DOMAIN}/webhook/* → n8n (Port 5678)
+  └─ n8n.{$DOMAIN} → forward_auth (Auth Gateway Port 8080) → n8n (Port 5678)
+       ↓
+[Internal Networks]
+  ├─ jobpilot_frontend: caddy, frontend, fastapi, auth-gateway, n8n
+  ├─ jobpilot_backend: fastapi, db, db-setup, n8n
+  └─ jobpilot_enrichment_backend: db, enrichment_worker
 ```
 
 ### Network Boundaries
-- **Frontend Network (`jobpilot_frontend`)**: Connects Caddy to n8n.
-- **Backend Network (`jobpilot_backend`)**: Connects n8n to FastAPI, and FastAPI to PostgreSQL.
-- **Port Publication**: Only Caddy exposes host ports (80 and 443). FastAPI, PostgreSQL, and n8n have **no direct host port publication**.
+- **Frontend Network (`jobpilot_frontend`)**: Connects Caddy to Frontend SPA, FastAPI, Auth Gateway, and n8n for ingress and forward authentication.
+- **Backend Network (`jobpilot_backend`)**: Connects FastAPI and n8n to the PostgreSQL database, and links n8n to FastAPI for internal orchestration.
+- **Enrichment Backend Network (`jobpilot_enrichment_backend`)**: Connects the background CLI `enrichment_worker` to PostgreSQL in isolation from frontend web routes.
+- **Port Publication**: Only Caddy exposes host ports (80 and 443). Frontend, FastAPI, PostgreSQL, Auth Gateway, and n8n have **no direct host port publication**.
 
 
 ## Edge Security & Proxy Trust (005.9.4)
@@ -31,14 +35,18 @@ PostgreSQL (Source of Truth)
 - **DNS Requirements**: The application structurally validates the syntax/shape of `DOMAIN` to ensure it conforms to DNS naming rules suitable for ACME. DNS correctness (valid A/AAAA records pointing to the VPS) remains an external deployment prerequisite.
 - **VCN Firewall**: The Oracle VCN firewall must explicitly allow ingress TCP traffic on ports 80 and 443. Ensure no IPv6 pathways (AAAA records) bypass intended IPv4-only firewall rules.
 
-### n8n UI Protection (First-Boot Hijacking Prevention)
+### n8n UI Protection & Auth Gateway (Forward Auth)
 - **First-Boot Vulnerability**: n8n (v1.0+) mandates User Management on the first visit. If exposed publicly, an attacker could hijack the Owner account.
-- **Mitigation**: Caddy restricts access using a `basic_auth` block for all paths except `/webhook/*` and `/webhook-test/*`.
-- **Configuration**: The `CADDY_ADMIN_USER` and `CADDY_ADMIN_HASH` variables in `.env` secure the UI. Generate the bcrypt hash using an interactive prompt to prevent shell history leakage:
-  ```bash
-  docker run -it --rm caddy:2.8-alpine caddy hash-password
-  ```
-  *Never store the plaintext password in Git or your `.env` file.*
+- **Mitigation via Forward Auth**: Caddy guards the entire `n8n.{$DOMAIN}` subdomain by delegating verification to the dedicated Auth Gateway microservice (`auth-gateway:8080`) using Caddy's `forward_auth` directive:
+  - Unauthenticated requests to `n8n.{$DOMAIN}` are redirected to `/login`.
+  - Public routes `/login` and `/logout` are reverse-proxied directly to `auth-gateway:8080`.
+  - Authenticated sessions pass Caddy's `/verify` probe, copying the `X-User` identity header downstream to n8n.
+  - **WebSocket Header Stripping**: Caddy explicitly strips hop-by-hop WebSocket headers (`Connection`, `Upgrade`, `Sec-WebSocket-*`) within the `forward_auth` subrequest block to prevent auth probe failures while preserving them on the downstream reverse proxy to n8n (`reverse_proxy n8n:5678`).
+- **Auth Gateway Mechanics**:
+  - Validates credentials using `CADDY_ADMIN_USER` and `CADDY_ADMIN_HASH_B64` (Base64-encoded bcrypt hash).
+  - Issues stateless, HMAC-SHA256 signed session cookies (`jobpilot_admin_session`) using `AUTH_SECRET_KEY` with `HttpOnly`, `Secure`, and `SameSite=Lax` attributes.
+  - Implements brute-force protection: blocks clients exceeding 5 failed login attempts in a 60-second window per client IP (returning HTTP 429).
+  - Enforces open-redirect prevention on the return URL (`rd` parameter).
 
 ### Proxy Trust Headers
 - **X-Forwarded-For Protection**: n8n must know Caddy is a trusted proxy to correctly resolve client IPs (essential for webhook IP restrictions and rate limiting). This is strictly mapped via `N8N_PROXY_HOPS=1`.
@@ -107,11 +115,21 @@ Because process variables override the `.env` file, CI/CD runners can safely inj
 - `POSTGRES_PASSWORD`, `N8N_DB_PASSWORD`
 - `API_SECRET_KEY` (FastAPI <-> n8n trust)
 - `N8N_ENCRYPTION_KEY` (Must be high-entropy, secures n8n credentials)
-- Provider keys (`ADZUNA_APP_ID`, `JOOBLE_IN_API_KEY`)
+- `AUTH_SECRET_KEY` (HMAC secret for Auth Gateway session tokens)
+- `CADDY_ADMIN_HASH` / `CADDY_ADMIN_HASH_B64` (Bcrypt hashes for operator login)
+- Provider & Scraper keys (`ADZUNA_APP_ID`, `ADZUNA_APP_KEY`, `JOOBLE_IN_API_KEY`, `FIRECRAWL_API_KEY`)
+- Optional backup keys (`BACKUP_ENCRYPTION_KEY`, `BACKUP_S3_ACCESS_KEY`, `BACKUP_S3_SECRET_KEY`)
 
 **Configuration:**
 - `ENVIRONMENT=production`
 - `DOMAIN` (Target URL for Caddy and n8n webhooks)
+- `ACME_EMAIL` (Contact email for TLS certificates)
+- `CADDY_ADMIN_USER` (Operator username)
+- `POSTGRES_DB`, `POSTGRES_USER`
+- `N8N_DB_NAME`, `N8N_DB_USER`
+- `ADZUNA_ENABLED`, `JOOBLE_ENABLED`
+- `FIRECRAWL_MONTHLY_BUDGET` (Default: 1000)
+- `TELEGRAM_CHAT_ID` (Target chat ID for notifications)
 
 ## First Deployment Prerequisites
 1. ARM64 capable Docker environment.
@@ -148,14 +166,18 @@ Do not hand-edit `requirements.lock`.
 The JobPilot CI/CD architecture is split into two independent workflows to protect secrets and ensure trusted deployments.
 
 - **CI Pipeline:** Runs tests in an isolated GitHub Actions `ubuntu-latest` environment on all pushes and PRs to `master`. Uses a PostgreSQL 16 service container and tests against Python 3.12. It explicitly operates with minimal, read-only permissions and possesses no access to production credentials.
-- **CD Pipeline (Image Publish):** A trusted build-and-publish job that triggers exclusively upon a successful CI run on the `master` branch. It utilizes GitHub's native `ubuntu-24.04-arm` runner to compile a native ARM64 image without QEMU emulation penalties.
+- **CD Pipeline (Image Publish & Automated Deployment):** A trusted build-and-publish job that triggers exclusively upon a successful CI run on the `master` branch. It utilizes GitHub's native `ubuntu-24.04-arm` runner to compile native ARM64 images without QEMU emulation penalties for `jobpilot-fastapi`, `jobpilot-auth-gateway`, and `jobpilot-frontend`.
 
 ### Exact SHA Identity
-The deployment pipeline strongly forbids mutable tags like `latest`. The native ARM64 image is built and tagged precisely with its 40-character Git commit SHA, creating an immutable artifact linked deterministically to the repository state. The SHA is structurally validated before publishing.
+The deployment pipeline strongly forbids mutable tags like `latest`. The native ARM64 images are built and tagged precisely with the 40-character Git commit SHA, creating immutable artifacts linked deterministically to the repository state. The SHA is structurally validated before publishing.
 
 ### GHCR Package Visibility
 Production images are published to the GitHub Container Registry (`ghcr.io`) using the scoped `GITHUB_TOKEN` automatically provided by GitHub Actions (requiring only `packages: write`).
-**Note:** The first time an image is published, it may default to "Private" visibility. An operator must manually navigate to the repository's Package settings on GitHub and change the visibility of the `jobpilot-fastapi` package to **Public**. This permits the VPS deployment script to pull the image securely over HTTPS without requiring complex local credential management.
+**Note:** The first time an image is published, it may default to "Private" visibility. An operator must manually navigate to the repository's Package settings on GitHub and change the visibility of the packages (`jobpilot-fastapi`, `jobpilot-auth-gateway`, `jobpilot-frontend`) to **Public**. This permits the VPS deployment script to pull images securely over HTTPS without requiring complex local credential management.
 
-### No Deployment Implemented Yet
-As of 005.9.6-B, automatic rollout to the VPS is intentionally deferred. The CD pipeline orchestrates the required ARM64 image publication only. Future milestones will implement SSH-based pull deployments executing `scripts/deploy.py` on the VPS.
+### Automated Production Deployment (SSH Payload)
+The `deploy-to-production` job in `.github/workflows/cd.yml` executes upon successful image publishing:
+1. Assembles an exact release staging payload containing `docker-compose.production.yml`, `scripts/deploy.py`, `Caddyfile`, `release_sha.txt`, and `image_digest.txt`.
+2. Packages the payload into `release.tar` and computes its SHA-256 checksum.
+3. Streams the tarball over SSH using deployment keys (`VPS_SSH_KEY`) and strict host key verification (`VPS_KNOWN_HOSTS`) to the production VPS user (`deploy@$VPS_HOST`).
+4. On the VPS, `scripts/deploy.py` verifies free disk space ($\ge 2\text{ GB}$), creates a pre-migration backup (`pg_dump -Fc`), validates restore viability in a throwaway container (`jobpilot_verify_db_*`), applies Alembic schema migrations via the `migration` compose profile, recreates containers in-place (`docker compose up -d --no-build`), and polls healthchecks on FastAPI and Frontend before committing `.current_release.json`.

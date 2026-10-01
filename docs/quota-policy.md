@@ -23,10 +23,18 @@ JobPilot explicitly separates provider limitations, account limitations, and its
 - **JobPilot Safety Budget**: 2/day, 500 lifetime.
 - *Note*: Historically, JobPilot assumed a `1/day` Jooble limit. This was an internal safety budget, **not** a provider fact.
 
+### Firecrawl (Scraper Fallback)
+- **Service Ceiling**: Monthly credit allocation based on plan (default budget: 1000 requests/month).
+- **Enforcement Window**: Monthly calendar window bucketed by `DATE_TRUNC('month', CURRENT_DATE)::DATE`.
+- **Exhaustion Behavior**: On HTTP 402 ("Payment Required"), JobPilot immediately synchronizes the recorded monthly usage to the configured ceiling via `_sync_firecrawl_budget`, falling back cleanly to snippet evaluation for subsequent jobs.
+
 ## Architecture & Concurrency
 
 - Quotas are enforced **atomically** in PostgreSQL via `provider_usage`, `provider_state`, and `provider_minute_usage` tables.
-- **Enforcement Scope**: PostgreSQL reservation accounting actively enforces `minute`, `daily`, and `lifetime` limits. `weekly` and `monthly` provider ceilings are currently represented strictly as policy metadata (for 005.7+ planning) but are **not** yet independently enforced. This is intentional scope for 005.6A because the JobPilot safety budgets keep those provider ceilings unreachable under normal conditions.
-- Reservations occur **preemptively**, using transactional SQL upserts (`ON CONFLICT DO UPDATE`) before making external HTTP requests.
-- If a reservation fails (limit exceeded), the transaction rolls back, and no provider request is made.
-- The implementation is designed to prevent concurrent oversubscription of the actively enforced quota dimensions.
+- **Enforcement Scope**: PostgreSQL reservation accounting (`acquire_provider_request_slot`) actively enforces all five quota dimensions: `minute`, `daily`, `weekly`, `monthly`, and `lifetime`.
+- **Multi-Day Window Aggregation**:
+  - `weekly` limits aggregate `SUM(request_count)` in `provider_usage` across `DATE_TRUNC('week', CAST(:d AS date))` through `DATE_TRUNC('week', CAST(:d AS date)) + INTERVAL '7 days'`.
+  - `monthly` limits aggregate `SUM(request_count)` in `provider_usage` across `DATE_TRUNC('month', CAST(:d AS date))` through `DATE_TRUNC('month', CAST(:d AS date)) + INTERVAL '1 month'`.
+- **Advisory Serialization**: When evaluating multi-day windows (`weekly` or `monthly`), the reservation transaction acquires a PostgreSQL advisory transaction lock (`pg_advisory_xact_lock(hashtext('provider_quota'), hashtext(:provider_name))`). This serializes concurrent requests for the same provider and eliminates race conditions across distributed date rows.
+- **Provider Routing Integration**: `get_provider_capacity` in [app/services/provider_router.py](file:///home/vittal/Projects/jobpilot/Jobpilot/backend/app/services/provider_router.py) queries active usage across `minute`, `daily`, `weekly`, `monthly`, and `lifetime` windows. A provider is marked unavailable if any window reaches zero capacity.
+- **Preemptive Commit**: Quota reservations occur transactional before external HTTP requests are issued. If any quota limit is exceeded, the transaction rolls back and the request is blocked. If an external provider call fails after reservation, the slot remains consumed to fail closed against upstream provider drain.
