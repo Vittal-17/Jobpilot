@@ -5,6 +5,7 @@ from sqlalchemy import text
 from app.core.config import settings
 from app.providers.types import ProviderName
 from app.services.provider_router import get_provider_capacity
+import app.db.models  # noqa: F401
 
 
 def _set_usage(db_session, minute_count=0, daily_count=0):
@@ -72,3 +73,35 @@ def test_selector_blocks_actual_lifetime_usage_at_limit(db_session, monkeypatch)
     )
     db_session.commit()
     assert get_provider_capacity(db_session, ProviderName.JOOBLE).available is False
+
+
+def test_selector_blocks_actual_weekly_usage_at_limit(db_session):
+    now = datetime(2026, 3, 18, 12, 0, tzinfo=timezone.utc)
+    db_session.execute(
+        text(
+            "INSERT INTO provider_usage (provider_name, usage_date, request_count) VALUES "
+            "('adzuna', '2026-03-16', 400), "
+            "('adzuna', '2026-03-17', 400), "
+            "('adzuna', '2026-03-18', 200)"
+        )
+    )
+    db_session.commit()
+    cap = get_provider_capacity(db_session, ProviderName.ADZUNA, now)
+    assert cap.weekly_remaining == 0
+    assert cap.available is False
+
+
+def test_selector_blocks_actual_monthly_usage_at_limit(db_session):
+    now = datetime(2026, 3, 18, 12, 0, tzinfo=timezone.utc)
+    db_session.execute(
+        text(
+            "INSERT INTO provider_usage (provider_name, usage_date, request_count) VALUES "
+            "('adzuna', '2026-03-02', 1500), "
+            "('adzuna', '2026-03-10', 990), "
+            "('adzuna', '2026-03-18', 10)"
+        )
+    )
+    db_session.commit()
+    cap = get_provider_capacity(db_session, ProviderName.ADZUNA, now)
+    assert cap.monthly_remaining == 0
+    assert cap.available is False

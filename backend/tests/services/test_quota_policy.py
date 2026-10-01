@@ -49,3 +49,21 @@ def test_missing_quota_dimensions_ignored():
 def test_unknown_provider():
     with pytest.raises(ValueError):
         get_provider_policy("unknown_provider")
+
+
+def test_effective_budget_calculation_weekly_and_monthly():
+    policy = get_provider_policy("adzuna")
+    assert policy.get_effective_limit('weekly') == 1000
+    assert policy.get_effective_limit('monthly') == 2500
+
+    # Override with tighter account ceiling
+    policy.account_ceiling.weekly = 500
+    policy.account_ceiling.monthly = 1200
+    assert policy.get_effective_limit('weekly') == 500
+    assert policy.get_effective_limit('monthly') == 1200
+
+    # Override with tighter safety budget
+    policy.safety_budget.weekly = 200
+    policy.safety_budget.monthly = 800
+    assert policy.get_effective_limit('weekly') == 200
+    assert policy.get_effective_limit('monthly') == 800

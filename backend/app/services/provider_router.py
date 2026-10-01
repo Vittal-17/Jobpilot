@@ -40,7 +40,9 @@ class ProviderCapacity:
     provider: ProviderName
     minute_remaining: int | None
     daily_remaining: int | None
-    lifetime_remaining: int | None
+    weekly_remaining: int | None = None
+    monthly_remaining: int | None = None
+    lifetime_remaining: int | None = None
 
     @property
     def available(self) -> bool:
@@ -49,6 +51,8 @@ class ProviderCapacity:
             for remaining in (
                 self.minute_remaining,
                 self.daily_remaining,
+                self.weekly_remaining,
+                self.monthly_remaining,
                 self.lifetime_remaining,
             )
         )
@@ -60,6 +64,8 @@ class ProviderCapacity:
             for value in (
                 self.minute_remaining,
                 self.daily_remaining,
+                self.weekly_remaining,
+                self.monthly_remaining,
                 self.lifetime_remaining,
             )
             if value is not None
@@ -83,6 +89,8 @@ def get_provider_capacity(
     limits = {
         "minute": policy.get_effective_limit("minute"),
         "daily": policy.get_effective_limit("daily"),
+        "weekly": policy.get_effective_limit("weekly"),
+        "monthly": policy.get_effective_limit("monthly"),
         "lifetime": policy.get_effective_limit("lifetime"),
     }
     now = reference_time or datetime.now(timezone.utc)
@@ -95,6 +103,20 @@ def get_provider_capacity(
         "daily": (
             "SELECT request_count FROM provider_usage "
             "WHERE provider_name = :provider AND usage_date = :bucket",
+            now.date(),
+        ),
+        "weekly": (
+            "SELECT COALESCE(SUM(request_count), 0) FROM provider_usage "
+            "WHERE provider_name = :provider "
+            "AND usage_date >= CAST(DATE_TRUNC('week', CAST(:bucket AS date)) AS date) "
+            "AND usage_date < CAST(DATE_TRUNC('week', CAST(:bucket AS date)) + INTERVAL '7 days' AS date)",
+            now.date(),
+        ),
+        "monthly": (
+            "SELECT COALESCE(SUM(request_count), 0) FROM provider_usage "
+            "WHERE provider_name = :provider "
+            "AND usage_date >= CAST(DATE_TRUNC('month', CAST(:bucket AS date)) AS date) "
+            "AND usage_date < CAST(DATE_TRUNC('month', CAST(:bucket AS date)) + INTERVAL '1 month' AS date)",
             now.date(),
         ),
         "lifetime": (
@@ -122,6 +144,8 @@ def get_provider_capacity(
         provider=provider_name,
         minute_remaining=remaining["minute"],
         daily_remaining=remaining["daily"],
+        weekly_remaining=remaining["weekly"],
+        monthly_remaining=remaining["monthly"],
         lifetime_remaining=remaining["lifetime"],
     )
 

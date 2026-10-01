@@ -84,7 +84,11 @@ def _best_effort_fail_execution(
             "Unable to record failed execution execution_id=%s", execution_id
         )
 
-def acquire_provider_request_slot(db: Session, provider_name: str) -> bool:
+def acquire_provider_request_slot(
+    db: Session,
+    provider_name: str,
+    reference_time: datetime | None = None,
+) -> bool:
     """Acquires a quota slot atomically. Returns True if request is allowed, False if over limit."""
     from app.services.quota_policy import get_provider_policy
 
@@ -96,6 +100,8 @@ def acquire_provider_request_slot(db: Session, provider_name: str) -> bool:
 
     minute_limit = policy.get_effective_limit('minute')
     daily_limit = policy.get_effective_limit('daily')
+    weekly_limit = policy.get_effective_limit('weekly')
+    monthly_limit = policy.get_effective_limit('monthly')
     lifetime_limit = policy.get_effective_limit('lifetime')
 
     if daily_limit is not None and daily_limit <= 0:
@@ -106,12 +112,29 @@ def acquire_provider_request_slot(db: Session, provider_name: str) -> bool:
         logger.warning(f"Provider {provider_name} has non-positive minute limit, blocking request.")
         return False
 
-    now_utc = datetime.now(timezone.utc)
+    if weekly_limit is not None and weekly_limit <= 0:
+        logger.warning(f"Provider {provider_name} has non-positive weekly limit, blocking request.")
+        return False
+
+    if monthly_limit is not None and monthly_limit <= 0:
+        logger.warning(f"Provider {provider_name} has non-positive monthly limit, blocking request.")
+        return False
+
+    if lifetime_limit is not None and lifetime_limit <= 0:
+        logger.warning(f"Provider {provider_name} has non-positive lifetime limit, blocking request.")
+        return False
+
+    now_utc = reference_time or datetime.now(timezone.utc)
     today = now_utc.date()
     current_minute = now_utc.replace(second=0, microsecond=0)
 
     try:
         with Session(db.get_bind()) as quota_db:
+            if weekly_limit is not None or monthly_limit is not None:
+                quota_db.execute(
+                    text("SELECT pg_advisory_xact_lock(hashtext('provider_quota'), hashtext(:p))"),
+                    {"p": provider_name},
+                )
             if minute_limit is not None:
                 stmt_minute = text("""
                     INSERT INTO provider_minute_usage (provider_name, usage_minute, request_count)
@@ -125,7 +148,7 @@ def acquire_provider_request_slot(db: Session, provider_name: str) -> bool:
                     quota_db.rollback()
                     return False
 
-            if daily_limit is not None:
+            if daily_limit is not None or weekly_limit is not None or monthly_limit is not None:
                 stmt = text("""
                     INSERT INTO provider_usage (provider_name, usage_date, request_count)
                     VALUES (:p, :d, 1)
@@ -133,10 +156,36 @@ def acquire_provider_request_slot(db: Session, provider_name: str) -> bool:
                     DO UPDATE SET request_count = provider_usage.request_count + 1
                     RETURNING request_count
                 """)
-                res = quota_db.execute(stmt, {"p": provider_name, "d": today}).scalar()
-                if res > daily_limit:
+                res_daily = quota_db.execute(stmt, {"p": provider_name, "d": today}).scalar()
+                if daily_limit is not None and res_daily > daily_limit:
                     quota_db.rollback()
                     return False
+
+                if weekly_limit is not None:
+                    stmt_weekly = text("""
+                        SELECT COALESCE(SUM(request_count), 0)
+                        FROM provider_usage
+                        WHERE provider_name = :p
+                          AND usage_date >= CAST(DATE_TRUNC('week', CAST(:d AS date)) AS date)
+                          AND usage_date < CAST(DATE_TRUNC('week', CAST(:d AS date)) + INTERVAL '7 days' AS date)
+                    """)
+                    res_weekly = quota_db.execute(stmt_weekly, {"p": provider_name, "d": today}).scalar()
+                    if res_weekly > weekly_limit:
+                        quota_db.rollback()
+                        return False
+
+                if monthly_limit is not None:
+                    stmt_monthly = text("""
+                        SELECT COALESCE(SUM(request_count), 0)
+                        FROM provider_usage
+                        WHERE provider_name = :p
+                          AND usage_date >= CAST(DATE_TRUNC('month', CAST(:d AS date)) AS date)
+                          AND usage_date < CAST(DATE_TRUNC('month', CAST(:d AS date)) + INTERVAL '1 month' AS date)
+                    """)
+                    res_monthly = quota_db.execute(stmt_monthly, {"p": provider_name, "d": today}).scalar()
+                    if res_monthly > monthly_limit:
+                        quota_db.rollback()
+                        return False
 
             if lifetime_limit is not None:
                 stmt_lifetime = text("""
