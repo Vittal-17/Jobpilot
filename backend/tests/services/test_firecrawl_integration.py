@@ -301,3 +301,109 @@ def test_transport_error_retry_state_transition():
     assert final_row[1] == 3          # Attempts reached max_attempts (3)
 
     db.close()
+
+
+@patch('app.services.scraper.firecrawl.FirecrawlClient.scrape')
+def test_redirect_wrapper_falls_to_snippet_without_mutating_description(mock_scrape):
+    settings.firecrawl_api_key = "test_key"
+    settings.firecrawl_monthly_budget = 1000
+
+    db = SessionLocal()
+    worker = EnrichmentWorker(max_attempts=3)
+
+    src_id = f"test_fc_redirect_{uuid.uuid4().hex}"
+    token = str(uuid.uuid4())
+    initial_snippet = "Original search snippet for senior .NET role"
+    job_id = db.execute(text("""
+        INSERT INTO jobs (title, company, source, source_job_id, description, description_is_snippet, discovered_at, created_at, updated_at)
+        VALUES ('.NET Developer', 'Reveille', 'test_firecrawl', :src_id, :desc, TRUE, NOW(), NOW(), NOW())
+        RETURNING id
+    """), {"src_id": src_id, "desc": initial_snippet}).scalar()
+
+    db.execute(text("""
+        INSERT INTO job_enrichments (job_id, status, url, lease_token, lease_expires_at, attempts, created_at, updated_at)
+        VALUES (:id, 'in_progress', 'https://www.adzuna.in/land/ad/560', :token, NOW() + INTERVAL '1 hour', 0, NOW(), NOW())
+    """), {"id": job_id, "token": token})
+    db.commit()
+
+    mock_scrape.return_value = (
+        "# Adzuna\n\n"
+        "Every job. Everywhere.\n\n"
+        "## You are now being redirected to **LinkedIn**\n\n"
+        "If you are not redirected within 5 seconds, [view ad here]"
+        "(https://click.appcast.io/t/D4tTJpE0fIOgRYREerHicvT6TT97rTBcoy_WUTFHJzOVv9P0WB6G7rj7lWixjI1lhG1mHJFEivyRSTtabQm9gg"
+        "==?ppt=eyJhbGciOiJIUzI1NiJ9.eyJlcG9jaCI6MTc5MDgzNzg5Niwic3JjX2lkIjo1MTQxNzAsImNsaWNrX2lkIjoiQ0l3aGVtVzk4Ukc0Sk1kMXRIMzJfZyIsInNvdXJjZV9yZWYiOiIxNTgyMF80NDcwMDgyNTY0IiwicHBfbmFtZSI6ImFwcGNhc3QifQ.pd_ikVIT3ystivPxB5uMqd16pWU9TDpWgYrIBRzu9Ok)"
+    )
+
+    with patch.object(worker.ssrf_client, 'fetch') as mock_fetch:
+        mock_resp = httpx.Response(403, request=httpx.Request("GET", "https://www.adzuna.in/land/ad/560"))
+        mock_fetch.side_effect = httpx.HTTPStatusError("403", request=mock_resp.request, response=mock_resp)
+
+        worker.process_job(db, job_id, "https://www.adzuna.in/land/ad/560", token)
+
+    # Verify job_enrichments dropped to unsupported
+    enrichment_row = db.execute(text("SELECT status, error_reason FROM job_enrichments WHERE job_id = :id"), {"id": job_id}).fetchone()
+    assert enrichment_row[0] == "unsupported"
+    assert "redirect/interstitial" in enrichment_row[1]
+
+    # Verify jobs table was NOT mutated with the redirect content
+    job_row = db.execute(text("SELECT description, description_is_snippet FROM jobs WHERE id = :id"), {"id": job_id}).fetchone()
+    assert job_row[0] == initial_snippet
+    assert job_row[1] is True
+
+    db.close()
+
+
+@patch('app.services.scraper.firecrawl.FirecrawlClient.scrape')
+def test_realistic_job_with_chrome_enriches_successfully(mock_scrape):
+    settings.firecrawl_api_key = "test_key"
+    settings.firecrawl_monthly_budget = 1000
+
+    db = SessionLocal()
+    worker = EnrichmentWorker(max_attempts=3)
+
+    src_id = f"test_fc_valid_{uuid.uuid4().hex}"
+    token = str(uuid.uuid4())
+    job_id = db.execute(text("""
+        INSERT INTO jobs (title, company, source, source_job_id, description, description_is_snippet, discovered_at, created_at, updated_at)
+        VALUES ('Generative AI Engineer', 'Gravity', 'test_firecrawl', :src_id, 'Initial snippet', TRUE, NOW(), NOW(), NOW())
+        RETURNING id
+    """), {"src_id": src_id}).scalar()
+
+    # Seed with an error_reason from a prior transient failure attempt
+    db.execute(text("""
+        INSERT INTO job_enrichments (job_id, status, url, lease_token, lease_expires_at, attempts, error_reason, created_at, updated_at)
+        VALUES (:id, 'in_progress', 'https://www.adzuna.in/details/601', :token, NOW() + INTERVAL '1 hour', 1, 'Previous transient timeout', NOW(), NOW())
+    """), {"id": job_id, "token": token})
+    db.commit()
+
+    realistic_content = (
+        "## Generative AI Engineer jobs in Bangalore\n\n"
+        "Leave us your email address and we'll send you similar new jobsCreate email alert [No, thanks](https://www.adzuna.in/details/5903777285#)\n\n"
+        "Loading...\n\n"
+        "# Generative AI Engineer\n\n"
+        "We are hiring a Generative AI Engineer to build production LLM applications.\n\n"
+        "**Responsibilities**\n\n"
+        "- Build RAG pipelines with LangChain\n\n"
+        "**Requirements**\n\n"
+        "- 1+ years building LLM-powered applications\n"
+    )
+    mock_scrape.return_value = realistic_content
+
+    with patch.object(worker.ssrf_client, 'fetch') as mock_fetch:
+        mock_resp = httpx.Response(403, request=httpx.Request("GET", "https://www.adzuna.in/details/601"))
+        mock_fetch.side_effect = httpx.HTTPStatusError("403", request=mock_resp.request, response=mock_resp)
+
+        worker.process_job(db, job_id, "https://www.adzuna.in/details/601", token)
+
+    # Verify job_enrichments transitioned to success and prior error_reason was cleared to NULL
+    enrichment_row = db.execute(text("SELECT status, error_reason FROM job_enrichments WHERE job_id = :id"), {"id": job_id}).fetchone()
+    assert enrichment_row[0] == "success"
+    assert enrichment_row[1] is None
+
+    # Verify jobs table has the enriched full description and description_is_snippet is False
+    job_row = db.execute(text("SELECT description, description_is_snippet FROM jobs WHERE id = :id"), {"id": job_id}).fetchone()
+    assert job_row[0] == realistic_content
+    assert job_row[1] is False
+
+    db.close()

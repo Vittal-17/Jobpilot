@@ -89,6 +89,70 @@ def test_fc_content_fails_predicate(mock_reserve, mock_scrape, worker, mock_db):
             mock_snippet.assert_called_once()
             assert mock_snippet.call_args[1]["unsupported"] is True
 
+ADZUNA_JOB_560_REDIRECT_FIXTURE = (
+    "# Adzuna\n\n"
+    "Every job. Everywhere.\n\n"
+    "## You are now being redirected to **LinkedIn**\n\n"
+    "If you are not redirected within 5 seconds, [view ad here]"
+    "(https://click.appcast.io/t/D4tTJpE0fIOgRYREerHicvT6TT97rTBcoy_WUTFHJzOVv9P0WB6G7rj7lWixjI1lhG1mHJFEivyRSTtabQm9gg"
+    "==?ppt=eyJhbGciOiJIUzI1NiJ9.eyJlcG9jaCI6MTc5MDgzNzg5Niwic3JjX2lkIjo1MTQxNzAsImNsaWNrX2lkIjoiQ0l3aGVtVzk4Ukc0Sk1kMXRIMzJfZyIsInNvdXJjZV9yZWYiOiIxNTgyMF80NDcwMDgyNTY0IiwicHBfbmFtZSI6ImFwcGNhc3QifQ.pd_ikVIT3ystivPxB5uMqd16pWU9TDpWgYrIBRzu9Ok)"
+)
+
+ADZUNA_JOB_601_REALISTIC_FIXTURE = (
+    "## Generative AI Engineer jobs in Bangalore\n\n"
+    "Leave us your email address and we'll send you similar new jobsCreate email alert [No, thanks](https://www.adzuna.in/details/5903777285#)\n\n"
+    "By creating an email alert, you agree to our [Terms & Conditions](https://www.adzuna.in/terms-and-conditions.html) and [Privacy Notice](https://www.adzuna.in/privacy-policy.html), and Cookie Use. You can cancel at any time.\n\n"
+    "Loading...\n\n"
+    "Are you based in the United States? Select your country to see jobs specific to your location.\n\n"
+    "United KingdomAustraliaÖsterreichBelgiëBrasilCanadaFranceDeutschlandIndiaItaliaMéxicoNederlandNew ZealandPolskaSingaporeSouth AfricaEspañaSchweizUnited StatesContinue\n\n"
+    "# Generative AI Engineer\n\n"
+    "Gravity Engineering Services Pvt Ltd\n\n"
+    "Bengaluru\n\n"
+    "8 - 40 lacs/annum\n\n"
+    "Full time\n\n"
+    "[Apply for this job](https://www.adzuna.in/land/ad/5903777285)\n\n"
+    "We are hiring a Generative AI Engineer to build production LLM applications.\n\n"
+    "**Responsibilities**\n\n"
+    "- Build RAG pipelines with LangChain or LlamaIndex\n"
+    "- Design prompts and evaluate model outputs\n"
+    "- Manage embeddings in vector databases such as Pinecone, Weaviate or FAISS\n"
+    "- Deploy and monitor LLM features in production\n\n"
+    "**Requirements**\n\n"
+    "- 1+ years building LLM-powered applications\n"
+    "- Hands-on with LangChain or LlamaIndex and vector databases\n"
+    "- Experience with the OpenAI, Anthropic or open-source model APIs\n\n"
+    "Skills:- LangChain, Retrieval Augmented Generation (RAG), Vector database, Prompt engineering and LlamaIndex\n"
+)
+
+@patch('app.services.scraper.firecrawl.FirecrawlClient.scrape')
+@patch('app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_credit', return_value=True)
+def test_fc_rejects_redirect_wrapper_job_560(mock_reserve, mock_scrape, worker, mock_db):
+    mock_resp = httpx.Response(403, request=httpx.Request("GET", "https://www.adzuna.in/land/ad/5899510236"))
+    settings.firecrawl_api_key = "test_key"
+    with patch.object(worker.ssrf_client, 'fetch', side_effect=httpx.HTTPStatusError("403", request=mock_resp.request, response=mock_resp)):
+        mock_scrape.return_value = ADZUNA_JOB_560_REDIRECT_FIXTURE
+        with patch.object(worker, 'complete_success') as mock_success:
+            with patch.object(worker, 'complete_with_snippet') as mock_snippet:
+                worker.process_job(mock_db, 560, "https://www.adzuna.in/land/ad/5899510236", "token123")
+                mock_success.assert_not_called()
+                mock_snippet.assert_called_once()
+                assert mock_snippet.call_args[1]["unsupported"] is True
+                assert "redirect/interstitial" in mock_snippet.call_args[0][3]
+
+@patch('app.services.scraper.firecrawl.FirecrawlClient.scrape')
+@patch('app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_credit', return_value=True)
+def test_fc_accepts_realistic_adzuna_job_with_chrome_job_601(mock_reserve, mock_scrape, worker, mock_db):
+    mock_resp = httpx.Response(403, request=httpx.Request("GET", "https://www.adzuna.in/details/5903777285"))
+    settings.firecrawl_api_key = "test_key"
+    with patch.object(worker.ssrf_client, 'fetch', side_effect=httpx.HTTPStatusError("403", request=mock_resp.request, response=mock_resp)):
+        mock_scrape.return_value = ADZUNA_JOB_601_REALISTIC_FIXTURE
+        with patch.object(worker, 'complete_success') as mock_success:
+            with patch.object(worker, 'complete_with_snippet') as mock_snippet:
+                worker.process_job(mock_db, 601, "https://www.adzuna.in/details/5903777285", "token123")
+                mock_success.assert_called_once()
+                assert mock_success.call_args[0][3] == ADZUNA_JOB_601_REALISTIC_FIXTURE
+                mock_snippet.assert_not_called()
+
 @patch('app.services.scraper.firecrawl.FirecrawlClient.scrape')
 @patch('app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_credit', return_value=True)
 def test_fc_timeout_retry(mock_reserve, mock_scrape, worker, mock_db):
