@@ -79,6 +79,35 @@ def ingest_jooble(query: JobSearchQuery, db: Session = Depends(get_db)):
         # P0: No internal exception leakage
         raise HTTPException(status_code=500, detail="Internal server error")
 
+@router.post("/firecrawl", response_model=IngestionResult, dependencies=[Depends(verify_api_key)])
+def ingest_firecrawl(query: JobSearchQuery, db: Session = Depends(get_db)):
+    from app.providers.exceptions import ProviderConfigurationError
+    try:
+        provider = create_provider(ProviderName.FIRECRAWL)
+    except HTTPException:
+        raise
+    except ProviderConfigurationError:
+        raise HTTPException(status_code=500, detail="Provider configuration error")
+    except Exception as e:
+        logger.exception("Ingestion endpoint unhandled error")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    try:
+        result, job_ids = run_ingestion(db, "firecrawl", provider, query)
+        if result.failed > 0:
+            raise HTTPException(status_code=502, detail="Firecrawl provider failed")
+        return result
+    except HTTPException:
+        raise
+    except RateLimitExceeded:
+        raise HTTPException(status_code=429, detail="Provider request quota exceeded")
+    except DatabaseUnavailable:
+        raise HTTPException(status_code=503, detail="Database temporarily unavailable")
+    except ProviderConfigurationError:
+        raise HTTPException(status_code=500, detail="Provider configuration error")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 
 from app.schemas.job_search import CanonicalSearchIntent
 
@@ -435,6 +464,44 @@ def select_next_search_endpoint(context: CycleContext | None = None, db: Session
     except Exception:
         import logging
         logging.getLogger(__name__).exception("Selection engine failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+from app.services.firecrawl_discovery import (
+    FirecrawlDiscoveryPlan,
+    FirecrawlDiscoveryTelemetry,
+    plan_discovery_queries,
+    execute_discovery_run,
+)
+
+class FirecrawlDiscoveryRunRequest(BaseModel):
+    plan: FirecrawlDiscoveryPlan | None = None
+    force: bool = False
+
+@router.post("/internal/firecrawl-discovery/plan", response_model=FirecrawlDiscoveryPlan, dependencies=[Depends(verify_api_key)])
+def internal_plan_firecrawl_discovery(force: bool = False, db: Session = Depends(get_db)):
+    try:
+        return plan_discovery_queries(db, force=force)
+    except Exception:
+        logger.exception("Failed to generate Firecrawl discovery plan")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.post("/internal/firecrawl-discovery/run", response_model=FirecrawlDiscoveryTelemetry, dependencies=[Depends(verify_api_key)])
+def internal_run_firecrawl_discovery(
+    req: FirecrawlDiscoveryPlan | FirecrawlDiscoveryRunRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    try:
+        plan = None
+        force = False
+        if req is not None:
+            if isinstance(req, FirecrawlDiscoveryRunRequest):
+                plan = req.plan
+                force = req.force
+            elif isinstance(req, FirecrawlDiscoveryPlan):
+                plan = req
+        return execute_discovery_run(db, plan=plan, force=force)
+    except Exception:
+        logger.exception("Failed to execute Firecrawl discovery run")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 class NotificationClaimRequest(BaseModel):
