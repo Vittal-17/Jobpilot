@@ -136,6 +136,10 @@ def acquire_provider_request_slot(
 
     if monthly_limit is not None and monthly_limit <= 0:
         logger.warning(f"Provider {provider_name} has non-positive monthly limit, blocking request.")
+        if provider_name in ("firecrawl", "firecrawl_monthly"):
+            from app.services.firecrawl_quota import record_firecrawl_operation
+            op_type = "discovery" if provider_name == "firecrawl" else "enrichment"
+            record_firecrawl_operation(operation=op_type, cost_units=cost_units, status="denied")
         return False
 
     if lifetime_limit is not None and lifetime_limit <= 0:
@@ -156,6 +160,21 @@ def acquire_provider_request_slot(
                 )
 
             if provider_name in ("firecrawl", "firecrawl_monthly"):
+                stmt_exhaustion_check = text("""
+                    SELECT 1 FROM firecrawl_operations
+                    WHERE status = 'payment_required'
+                      AND created_at >= CAST(DATE_TRUNC('month', CAST(:d AS date)) AS timestamp with time zone)
+                      AND created_at < CAST(DATE_TRUNC('month', CAST(:d AS date)) + INTERVAL '1 month' AS timestamp with time zone)
+                    LIMIT 1
+                """)
+                is_payment_required = quota_db.execute(stmt_exhaustion_check, {"d": today}).scalar() is not None
+                if is_payment_required:
+                    quota_db.rollback()
+                    from app.services.firecrawl_quota import record_firecrawl_operation
+                    op_type = "discovery" if provider_name == "firecrawl" else "enrichment"
+                    record_firecrawl_operation(operation=op_type, cost_units=cost_units, status="denied")
+                    return False
+
                 stmt_monthly_check = text("""
                     SELECT COALESCE(SUM(request_count), 0)
                     FROM provider_usage
@@ -166,6 +185,9 @@ def acquire_provider_request_slot(
                 current_monthly = quota_db.execute(stmt_monthly_check, {"d": today}).scalar() or 0
                 if monthly_limit is not None and current_monthly + cost_units > monthly_limit:
                     quota_db.rollback()
+                    from app.services.firecrawl_quota import record_firecrawl_operation
+                    op_type = "discovery" if provider_name == "firecrawl" else "enrichment"
+                    record_firecrawl_operation(operation=op_type, cost_units=cost_units, status="denied")
                     return False
 
                 target_date = today.replace(day=1) if provider_name == "firecrawl_monthly" else today

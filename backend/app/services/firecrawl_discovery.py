@@ -11,7 +11,7 @@ from app.providers.registry import create_provider
 from app.providers.types import ProviderName
 from app.providers.exceptions import ProviderError, ProviderConfigurationError
 from app.schemas.job_search import JobSearchQuery, IngestionResult
-from app.services.firecrawl_quota import calculate_search_credits, get_firecrawl_budget_state
+from app.services.firecrawl_quota import calculate_search_credits, get_firecrawl_budget_state, record_firecrawl_operation
 from app.services.ingestion import (
     run_ingestion,
     RateLimitExceeded,
@@ -284,6 +284,7 @@ def execute_discovery_run(
             telemetry.credits_reserved += cost_units
 
             if result.failed == 0:
+                record_firecrawl_operation(operation="discovery", cost_units=cost_units, status="success")
                 telemetry.successful_queries += 1
                 telemetry.candidates_found += result.fetched
                 telemetry.candidates_accepted += result.created
@@ -292,6 +293,7 @@ def execute_discovery_run(
                 telemetry.ingestion.duplicates += result.duplicates
                 telemetry.ingestion.invalid += result.invalid
             else:
+                record_firecrawl_operation(operation="discovery", cost_units=cost_units, status="failed")
                 telemetry.ingestion.failed += result.failed
                 logger.warning("Discovery query failed for %s: %s", q.keywords, result.failed)
         except RateLimitExceeded:

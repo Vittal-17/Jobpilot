@@ -12,7 +12,8 @@ import respx
 
 def clear_db():
     db = SessionLocal()
-    # Clean up quota rows
+    # Clean up quota rows and operational logs
+    db.execute(text("DELETE FROM firecrawl_operations"))
     db.execute(text("DELETE FROM provider_usage WHERE provider_name = 'firecrawl_monthly'"))
     # Clean up any jobs created by firecrawl tests (using source = 'test_firecrawl' or test prefixes)
     db.execute(text("DELETE FROM job_enrichments WHERE job_id IN (SELECT id FROM jobs WHERE source = 'test_firecrawl' OR source_job_id LIKE 'test_fc_%')"))
@@ -221,13 +222,24 @@ def test_real_402_synchronization_via_process_job(mock_scrape):
         worker.process_job(db, job_id, "http://a.com", token)
         mock_scrape.assert_called_once()
 
-    # Assert DB is now at 1000
+    # Assert provider_usage remains at real reserved amount (1 pre-existing + 1 reserved for job = 2), never 1000
     synced = db.execute(text("SELECT request_count FROM provider_usage WHERE provider_name = 'firecrawl_monthly' AND usage_date = DATE_TRUNC('month', CURRENT_DATE)::DATE")).scalar()
-    assert synced == 1000
+    assert synced == 2
+    assert synced != 1000
 
     # Also assert status is 'unsupported'
     status = db.execute(text("SELECT status FROM job_enrichments WHERE job_id = :id"), {"id": job_id}).scalar()
     assert status == 'unsupported'
+
+    # Assert operational event was recorded in firecrawl_operations
+    last_op = db.execute(text("SELECT status FROM firecrawl_operations WHERE operation = 'enrichment' ORDER BY id DESC LIMIT 1")).scalar()
+    assert last_op == 'payment_required'
+
+    # Assert subsequent reservations fail closed without touching provider_usage
+    from app.services.ingestion import acquire_provider_request_slot
+    assert acquire_provider_request_slot(db, "firecrawl_monthly", cost_units=1) is False
+    post_block_usage = db.execute(text("SELECT request_count FROM provider_usage WHERE provider_name = 'firecrawl_monthly' AND usage_date = DATE_TRUNC('month', CURRENT_DATE)::DATE")).scalar()
+    assert post_block_usage == 2
 
     db.close()
 

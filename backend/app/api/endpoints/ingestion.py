@@ -504,6 +504,24 @@ def internal_run_firecrawl_discovery(
         logger.exception("Failed to execute Firecrawl discovery run")
         raise HTTPException(status_code=500, detail="Internal server error")
 
+from app.schemas.firecrawl import FirecrawlTelemetryResponse
+from app.services.firecrawl_quota import get_firecrawl_budget_state
+
+@router.get("/internal/firecrawl-telemetry", response_model=FirecrawlTelemetryResponse, dependencies=[Depends(verify_api_key)])
+def internal_get_firecrawl_telemetry(db: Session = Depends(get_db)):
+    state = get_firecrawl_budget_state(db)
+    return FirecrawlTelemetryResponse(
+        monthly_cap=state["monthly_cap"],
+        monthly_used=state["monthly_used"],
+        monthly_remaining=state["monthly_remaining"],
+        reserved=state["reserved"],
+        discovery_used=state["discovery_used"],
+        enrichment_used=state["enrichment_used"],
+        quota_denied=state["quota_denied"],
+        last_operation=state["last_operation"],
+        is_exhausted=state["is_exhausted"],
+    )
+
 class NotificationClaimRequest(BaseModel):
     user_id: int | None = None
     delivery_id: str = Field(..., max_length=64, min_length=1)
