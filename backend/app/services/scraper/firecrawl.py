@@ -98,11 +98,19 @@ class FirecrawlClient:
                 if not data.get("success", False):
                     raise FirecrawlPayloadError(f"Firecrawl search failed: {data}")
 
-                raw_results = data.get("data", [])
-                if not isinstance(raw_results, list):
-                    raise FirecrawlPayloadError("Firecrawl search results payload 'data' is not a list")
+                raw_data = data.get("data")
+                if raw_data is None:
+                    return []
 
-                return raw_results
+                if isinstance(raw_data, dict):
+                    raw_results = raw_data.get("web")
+                    if not isinstance(raw_results, list):
+                        raise FirecrawlPayloadError("Firecrawl search results payload 'data.web' is missing or not a list")
+                    return raw_results
+                elif isinstance(raw_data, list):
+                    return raw_data
+                else:
+                    raise FirecrawlPayloadError("Firecrawl search results payload 'data' is neither a list nor a dictionary containing 'web'")
 
         except httpx.TimeoutException:
             raise FirecrawlError("Firecrawl request timed out", status_code=408)

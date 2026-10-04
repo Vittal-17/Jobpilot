@@ -1,4 +1,5 @@
 import os
+import urllib.parse
 os.environ.setdefault("API_SECRET_KEY", "test-api-secret-key-for-pytest")
 import pytest
 import psycopg
@@ -51,6 +52,21 @@ def create_test_db_if_not_exists(test_url: str):
         pass
     except Exception as e:
         raise RuntimeError("FATAL: Failed to connect to PostgreSQL to create test database") from e
+
+create_test_db_if_not_exists(TEST_DATABASE_URL)
+import app.db.database
+_test_db_name = urllib.parse.urlparse(TEST_DATABASE_URL).path.lstrip('/')
+if app.db.database.engine.url.database != _test_db_name:
+    app.db.database.engine.dispose()
+    app.db.database.engine = create_engine(
+        TEST_DATABASE_URL,
+        pool_pre_ping=True,
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
+    )
+    app.db.database.SessionLocal.configure(bind=app.db.database.engine)
+assert app.db.database.engine.url.database == _test_db_name, f"Engine bound to {app.db.database.engine.url.database}, expected {_test_db_name}"
+assert app.db.database.SessionLocal.kw["bind"].url.database == _test_db_name, f"SessionLocal bound to {app.db.database.SessionLocal.kw['bind'].url.database}, expected {_test_db_name}"
 
 @pytest.fixture(scope="session")
 def engine():

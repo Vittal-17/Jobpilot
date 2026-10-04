@@ -273,6 +273,62 @@ def test_firecrawl_provider_error_mapping():
     with pytest.raises(ProviderPayloadError):
         provider.search_jobs(query)
 
+    # Malformed data.web mapped to ProviderPayloadError
+    respx.post("https://api.firecrawl.dev/v2/search").mock(return_value=httpx.Response(200, json={"success": True, "data": {"web": "not a list"}}))
+    with pytest.raises(ProviderPayloadError):
+        provider.search_jobs(query)
+
+    # Missing data.web in dict mapped to ProviderPayloadError
+    respx.post("https://api.firecrawl.dev/v2/search").mock(return_value=httpx.Response(200, json={"success": True, "data": {}}))
+    with pytest.raises(ProviderPayloadError):
+        provider.search_jobs(query)
+
+
+@respx.mock
+def test_firecrawl_provider_search_jobs_v2_web_format():
+    mock_resp = {
+        "success": True,
+        "data": {
+            "web": [
+                {
+                    "url": "https://techcorp.com/careers/v2-py-dev",
+                    "title": "Junior Python Developer - TechCorp",
+                    "description": "Great entry level role for freshers.",
+                    "position": 1,
+                },
+                {
+                    "url": "https://startup.io/jobs/v2-backend",
+                    "title": "Backend Engineer - StartupIO",
+                    "description": "FastAPI and Postgres experience needed.",
+                    "position": 2,
+                },
+            ]
+        },
+    }
+    respx.post("https://api.firecrawl.dev/v2/search").mock(return_value=httpx.Response(200, json=mock_resp))
+
+    provider = FirecrawlProvider()
+    query = JobSearchQuery(keywords="Python Developer", location="Bengaluru", page=1, page_size=10)
+
+    jobs = provider.search_jobs(query)
+    assert len(jobs) == 2
+
+    job1 = jobs[0]
+    assert job1.source == "firecrawl"
+    assert job1.title == "Junior Python Developer"
+    assert job1.company == "TechCorp"
+    assert job1.location == "Bengaluru"
+    assert job1.description_is_snippet is True
+    assert job1.description == "Great entry level role for freshers."
+    assert str(job1.url) == "https://techcorp.com/careers/v2-py-dev"
+    assert job1.source_job_id.startswith("fc_")
+
+    job2 = jobs[1]
+    assert job2.source == "firecrawl"
+    assert job2.title == "Backend Engineer"
+    assert job2.company == "StartupIO"
+
+
 
 @respx.mock
 def test_run_ingestion_with_firecrawl_quota_success():
