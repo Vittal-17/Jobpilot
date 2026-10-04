@@ -538,6 +538,17 @@ def test_firecrawl_discovery_routing_isolation_and_enablement(monkeypatch):
 
     db_mock = MagicMock()
 
+    class MockConfiguredProvider:
+        def validate_config(self):
+            return None
+
+    monkeypatch.setattr(settings, "adzuna_enabled", True)
+    monkeypatch.setattr(settings, "jooble_enabled", True)
+    monkeypatch.setattr(
+        "app.services.provider_router.create_provider",
+        lambda prov_name: MockConfiguredProvider() if prov_name in (ProviderName.ADZUNA, ProviderName.JOOBLE) else create_provider(prov_name),
+    )
+
     # Case A: firecrawl_discovery_enabled = False (default) -> Never routed
     settings.firecrawl_discovery_enabled = False
     assert is_provider_enabled(ProviderName.FIRECRAWL) is False
