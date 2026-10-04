@@ -31,6 +31,8 @@ services:
   auth-gateway:
     build:
       context: ./auth-gateway
+      args:
+        APP_COMMIT_SHA: ${APP_COMMIT_SHA:?APP_COMMIT_SHA must be set to an exact Git SHA}
     image: ghcr.io/vittal-17/jobpilot-auth-gateway:${APP_COMMIT_SHA:?APP_COMMIT_SHA must be set to an exact Git SHA}
     restart: unless-stopped
     environment:
@@ -40,6 +42,12 @@ services:
     networks:
       - frontend
     logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/login || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
   caddy:
     image: caddy:2.8-alpine
     restart: unless-stopped
@@ -135,6 +143,15 @@ services:
       - ADZUNA_ENABLED=${ADZUNA_ENABLED:-true}
       - JOOBLE_IN_API_KEY=${JOOBLE_IN_API_KEY:-}
       - JOOBLE_ENABLED=${JOOBLE_ENABLED:-true}
+      - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY:-}
+      - FIRECRAWL_ENABLED=${FIRECRAWL_ENABLED:-true}
+      - FIRECRAWL_MONTHLY_BUDGET=${FIRECRAWL_MONTHLY_BUDGET:-1000}
+      - FIRECRAWL_MONTHLY_AUTOMATION_CAP=${FIRECRAWL_MONTHLY_AUTOMATION_CAP:-900}
+      - FIRECRAWL_RESERVED_CREDITS=${FIRECRAWL_RESERVED_CREDITS:-100}
+      - FIRECRAWL_DISCOVERY_ENABLED=${FIRECRAWL_DISCOVERY_ENABLED:-false}
+      - FIRECRAWL_DISCOVERY_MAX_QUERIES_PER_RUN=${FIRECRAWL_DISCOVERY_MAX_QUERIES_PER_RUN:-2}
+      - FIRECRAWL_DISCOVERY_MAX_RESULTS_PER_QUERY=${FIRECRAWL_DISCOVERY_MAX_RESULTS_PER_QUERY:-10}
+      - FIRECRAWL_DISCOVERY_MAX_CREDITS_PER_RUN=${FIRECRAWL_DISCOVERY_MAX_CREDITS_PER_RUN:-20}
     networks:
       - backend
       - frontend
@@ -263,7 +280,11 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:?POSTGRES_DB must be set}
       - API_SECRET_KEY=${API_SECRET_KEY:?API_SECRET_KEY must be set}
       - FIRECRAWL_API_KEY=${FIRECRAWL_API_KEY:-}
+      - FIRECRAWL_ENABLED=${FIRECRAWL_ENABLED:-true}
       - FIRECRAWL_MONTHLY_BUDGET=${FIRECRAWL_MONTHLY_BUDGET:-1000}
+      - FIRECRAWL_MONTHLY_AUTOMATION_CAP=${FIRECRAWL_MONTHLY_AUTOMATION_CAP:-900}
+      - FIRECRAWL_RESERVED_CREDITS=${FIRECRAWL_RESERVED_CREDITS:-100}
+      - FIRECRAWL_ENRICHMENT_MAX_CREDITS_PER_RUN=${FIRECRAWL_ENRICHMENT_MAX_CREDITS_PER_RUN:-10}
     networks:
       - enrichment_backend
     depends_on:

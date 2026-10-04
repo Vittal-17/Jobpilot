@@ -408,7 +408,8 @@ def test_enrichment_worker_snippet_fallback_extraction_error(db_session):
     mock_response.raise_for_status.return_value = None
     worker.ssrf_client.fetch.return_value = mock_response
 
-    with patch("app.services.enrichment_worker.extract_job_description", side_effect=ExtractionError("Failed to find description div")):
+    with patch("app.services.enrichment_worker.extract_job_description", side_effect=ExtractionError("Failed to find description div")), \
+         patch("app.core.config.settings.firecrawl_enabled", False):
         worker.process_job(db_session, job_id=9998, url="http://example.com/job3", token="test-token")
 
     updated = db_session.query(JobEnrichmentModel).filter_by(job_id=9998).first()

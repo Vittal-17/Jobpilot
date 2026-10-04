@@ -79,6 +79,35 @@ def ingest_jooble(query: JobSearchQuery, db: Session = Depends(get_db)):
         # P0: No internal exception leakage
         raise HTTPException(status_code=500, detail="Internal server error")
 
+@router.post("/firecrawl", response_model=IngestionResult, dependencies=[Depends(verify_api_key)])
+def ingest_firecrawl(query: JobSearchQuery, db: Session = Depends(get_db)):
+    from app.providers.exceptions import ProviderConfigurationError
+    try:
+        provider = create_provider(ProviderName.FIRECRAWL)
+    except HTTPException:
+        raise
+    except ProviderConfigurationError:
+        raise HTTPException(status_code=500, detail="Provider configuration error")
+    except Exception as e:
+        logger.exception("Ingestion endpoint unhandled error")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    try:
+        result, job_ids = run_ingestion(db, "firecrawl", provider, query)
+        if result.failed > 0:
+            raise HTTPException(status_code=502, detail="Firecrawl provider failed")
+        return result
+    except HTTPException:
+        raise
+    except RateLimitExceeded:
+        raise HTTPException(status_code=429, detail="Provider request quota exceeded")
+    except DatabaseUnavailable:
+        raise HTTPException(status_code=503, detail="Database temporarily unavailable")
+    except ProviderConfigurationError:
+        raise HTTPException(status_code=500, detail="Provider configuration error")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 
 from app.schemas.job_search import CanonicalSearchIntent
 
@@ -436,6 +465,62 @@ def select_next_search_endpoint(context: CycleContext | None = None, db: Session
         import logging
         logging.getLogger(__name__).exception("Selection engine failed")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+from app.services.firecrawl_discovery import (
+    FirecrawlDiscoveryPlan,
+    FirecrawlDiscoveryTelemetry,
+    plan_discovery_queries,
+    execute_discovery_run,
+)
+
+class FirecrawlDiscoveryRunRequest(BaseModel):
+    plan: FirecrawlDiscoveryPlan | None = None
+    force: bool = False
+
+@router.post("/internal/firecrawl-discovery/plan", response_model=FirecrawlDiscoveryPlan, dependencies=[Depends(verify_api_key)])
+def internal_plan_firecrawl_discovery(force: bool = False, db: Session = Depends(get_db)):
+    try:
+        return plan_discovery_queries(db, force=force)
+    except Exception:
+        logger.exception("Failed to generate Firecrawl discovery plan")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@router.post("/internal/firecrawl-discovery/run", response_model=FirecrawlDiscoveryTelemetry, dependencies=[Depends(verify_api_key)])
+def internal_run_firecrawl_discovery(
+    req: FirecrawlDiscoveryPlan | FirecrawlDiscoveryRunRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    try:
+        plan = None
+        force = False
+        if req is not None:
+            if isinstance(req, FirecrawlDiscoveryRunRequest):
+                plan = req.plan
+                force = req.force
+            elif isinstance(req, FirecrawlDiscoveryPlan):
+                plan = req
+        return execute_discovery_run(db, plan=plan, force=force)
+    except Exception:
+        logger.exception("Failed to execute Firecrawl discovery run")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+from app.schemas.firecrawl import FirecrawlTelemetryResponse
+from app.services.firecrawl_quota import get_firecrawl_budget_state
+
+@router.get("/internal/firecrawl-telemetry", response_model=FirecrawlTelemetryResponse, dependencies=[Depends(verify_api_key)])
+def internal_get_firecrawl_telemetry(db: Session = Depends(get_db)):
+    state = get_firecrawl_budget_state(db)
+    return FirecrawlTelemetryResponse(
+        monthly_cap=state["monthly_cap"],
+        monthly_used=state["monthly_used"],
+        monthly_remaining=state["monthly_remaining"],
+        reserved=state["reserved"],
+        discovery_used=state["discovery_used"],
+        enrichment_used=state["enrichment_used"],
+        quota_denied=state["quota_denied"],
+        last_operation=state["last_operation"],
+        is_exhausted=state["is_exhausted"],
+    )
 
 class NotificationClaimRequest(BaseModel):
     user_id: int | None = None

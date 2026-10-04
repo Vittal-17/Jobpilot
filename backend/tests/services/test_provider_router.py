@@ -50,6 +50,7 @@ def test_provider_package_exports_are_authoritative():
         "JobProvider",
         "AdzunaProvider",
         "JoobleProvider",
+        "FirecrawlProvider",
         "ProviderName",
     ]
     assert all(hasattr(providers, name) for name in providers.__all__)

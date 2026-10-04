@@ -1,0 +1,186 @@
+[
+  {
+    "id": "workflow-firecrawl-discovery",
+    "name": "JP - Firecrawl Discovery Orchestration",
+    "active": false,
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "hours",
+                "hoursInterval": 24
+              }
+            ]
+          }
+        },
+        "id": "node-trigger",
+        "name": "Schedule Trigger",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1,
+        "position": [100, 300]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "http://fastapi:8000/ingestion/internal/firecrawl-discovery/plan",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "httpHeaderAuth",
+          "sendBody": false
+        },
+        "id": "node-plan",
+        "name": "Plan Queries",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.1,
+        "position": [300, 300],
+        "credentials": {
+          "httpHeaderAuth": {
+            "id": "T0w0H2O4M9E6W4T6",
+            "name": "JP - FastAPI Internal API"
+          }
+        }
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": {
+              "caseSensitive": true,
+              "typeValidation": "strict"
+            },
+            "conditions": [
+              {
+                "leftValue": "={{ $json.enabled }}",
+                "rightValue": true,
+                "operator": {
+                  "type": "boolean",
+                  "operation": "equals"
+                }
+              },
+              {
+                "leftValue": "={{ $json.queries ? $json.queries.length : 0 }}",
+                "rightValue": 0,
+                "operator": {
+                  "type": "number",
+                  "operation": "gt"
+                }
+              }
+            ],
+            "combinator": "and"
+          }
+        },
+        "id": "node-check-enabled",
+        "name": "Check If Enabled",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2.2,
+        "position": [500, 300]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "http://fastapi:8000/ingestion/internal/firecrawl-discovery/run",
+          "authentication": "predefinedCredentialType",
+          "nodeCredentialType": "httpHeaderAuth",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify($json) }}"
+        },
+        "id": "node-execute",
+        "name": "Execute Discovery",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.1,
+        "position": [700, 200],
+        "credentials": {
+          "httpHeaderAuth": {
+            "id": "T0w0H2O4M9E6W4T6",
+            "name": "JP - FastAPI Internal API"
+          }
+        },
+        "continueOnFail": true
+      },
+      {
+        "parameters": {
+          "jsCode": "const input = $input.first().json;\nreturn {\n  json: {\n    status: input.status || 'unknown',\n    query_count: input.query_count || 0,\n    attempted_queries: input.attempted_queries || 0,\n    successful_queries: input.successful_queries || 0,\n    candidates_found: input.candidates_found || 0,\n    candidates_accepted: input.candidates_accepted || 0,\n    candidates_rejected: input.candidates_rejected || 0,\n    ingestion: input.ingestion || { created: 0, duplicates: 0, invalid: 0, failed: 0 },\n    credits_consumed: input.credits_consumed || 0,\n    credits_reserved: input.credits_reserved !== undefined ? input.credits_reserved : (input.credits_consumed || 0),\n    estimated_credits: input.estimated_credits || 0\n  }\n};"
+        },
+        "id": "node-telemetry",
+        "name": "Execution Telemetry",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [900, 200]
+      },
+      {
+        "parameters": {
+          "jsCode": "return { json: { status: 'Discovery stopped', reason: $input.first().json.reason || 'Firecrawl discovery is disabled or no queries planned' } };"
+        },
+        "id": "node-stop",
+        "name": "Stop",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [700, 400]
+      }
+    ],
+    "connections": {
+      "Schedule Trigger": {
+        "main": [
+          [
+            {
+              "node": "Plan Queries",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Plan Queries": {
+        "main": [
+          [
+            {
+              "node": "Check If Enabled",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Check If Enabled": {
+        "main": [
+          [
+            {
+              "node": "Execute Discovery",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Stop",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Execute Discovery": {
+        "main": [
+          [
+            {
+              "node": "Execution Telemetry",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Execution Telemetry": {
+        "main": [
+          []
+        ]
+      },
+      "Stop": {
+        "main": [
+          []
+        ]
+      }
+    }
+  }
+]

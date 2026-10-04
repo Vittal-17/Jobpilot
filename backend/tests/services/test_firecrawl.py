@@ -9,6 +9,16 @@ from app.services.scraper.firecrawl import FirecrawlError
 import httpx
 from app.core.config import settings
 
+@pytest.fixture(autouse=True)
+def restore_settings():
+    orig_key = settings.firecrawl_api_key
+    orig_budget = settings.firecrawl_monthly_budget
+    try:
+        yield
+    finally:
+        settings.firecrawl_api_key = orig_key
+        settings.firecrawl_monthly_budget = orig_budget
+
 @pytest.fixture
 def mock_db():
     db = MagicMock()
@@ -124,6 +134,23 @@ ADZUNA_JOB_601_REALISTIC_FIXTURE = (
     "Skills:- LangChain, Retrieval Augmented Generation (RAG), Vector database, Prompt engineering and LlamaIndex\n"
 )
 
+ADZUNA_JOB_FALLBACK_INTERSTITIAL_FIXTURE = (
+    "# Python Job Board\n\n"
+    "**Notice:** This page displays a fallback because interactive scripts did not run. "
+    "Possible causes include disabled JavaScript or failure to load scripts or stylesheets.\n\n"
+    "## Senior Python Developer\n\n"
+    "Location: Remote / Bengaluru\n"
+    "Company: TechCorp Solutions\n"
+    "Salary: ₹2,500,000 - ₹3,500,000 per year\n\n"
+    "We are seeking an experienced Senior Python Developer to join our backend engineering team. "
+    "In this role, you will design, build, and maintain scalable APIs using FastAPI and PostgreSQL, "
+    "collaborate with product managers, and optimize database queries.\n\n"
+    "**Requirements:**\n"
+    "- 5+ years of software engineering experience with Python\n"
+    "- Strong proficiency in SQLAlchemy and asynchronous programming\n"
+    "- Solid foundation in relational database schema design and indexing\n"
+)
+
 @patch('app.services.scraper.firecrawl.FirecrawlClient.scrape')
 @patch('app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_credit', return_value=True)
 def test_fc_rejects_redirect_wrapper_job_560(mock_reserve, mock_scrape, worker, mock_db):
@@ -138,6 +165,48 @@ def test_fc_rejects_redirect_wrapper_job_560(mock_reserve, mock_scrape, worker, 
                 mock_snippet.assert_called_once()
                 assert mock_snippet.call_args[1]["unsupported"] is True
                 assert "redirect/interstitial" in mock_snippet.call_args[0][3]
+
+@patch('app.services.scraper.firecrawl.FirecrawlClient.scrape')
+@patch('app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_credit', return_value=True)
+def test_fc_rejects_js_fallback_interstitial_page(mock_reserve, mock_scrape, worker, mock_db):
+    mock_resp = httpx.Response(403, request=httpx.Request("GET", "https://www.python.org/jobs/123"))
+    settings.firecrawl_api_key = "test_key"
+    with patch.object(worker.ssrf_client, 'fetch', side_effect=httpx.HTTPStatusError("403", request=mock_resp.request, response=mock_resp)):
+        mock_scrape.return_value = ADZUNA_JOB_FALLBACK_INTERSTITIAL_FIXTURE
+        with patch.object(worker, 'complete_success') as mock_success:
+            with patch.object(worker, 'complete_with_snippet') as mock_snippet:
+                worker.process_job(mock_db, 561, "https://www.python.org/jobs/123", "token123")
+                mock_success.assert_not_called()
+                mock_snippet.assert_called_once()
+                assert mock_snippet.call_args[1]["unsupported"] is True
+                assert "fallback/interstitial" in mock_snippet.call_args[0][3]
+
+@patch('app.services.scraper.firecrawl.FirecrawlClient.scrape')
+@patch('app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_credit', return_value=True)
+def test_fc_rejects_js_fallback_wording_variations(mock_reserve, mock_scrape, worker, mock_db):
+    mock_resp = httpx.Response(403, request=httpx.Request("GET", "https://example.com/jobs/1"))
+    settings.firecrawl_api_key = "test_key"
+
+    variations = [
+        "Notice: This page displays a fallback because interactive scripts did not run.\n\n" + ("Job description details here. " * 10),
+        "Warning: This page displays a fallback because interactive scripts failed to run.\n\n" + ("Job description details here. " * 10),
+        "Notice: page displays a fallback because interactive scripts did not run.\n\n" + ("Job description details here. " * 10),
+        "Notice: displays a fallback because interactive scripts were blocked.\n\n" + ("Job description details here. " * 10),
+        "Error: failure to load scripts or stylesheets. Please reload.\n\n" + ("Job description details here. " * 10),
+        "Notice: disabled javascript or failure to load page resources.\n\n" + ("Job description details here. " * 10),
+        "Fallback because interactive scripts could not run.\n\n" + ("Job description details here. " * 10),
+    ]
+
+    for idx, content in enumerate(variations):
+        with patch.object(worker.ssrf_client, 'fetch', side_effect=httpx.HTTPStatusError("403", request=mock_resp.request, response=mock_resp)):
+            mock_scrape.return_value = content
+            with patch.object(worker, 'complete_success') as mock_success:
+                with patch.object(worker, 'complete_with_snippet') as mock_snippet:
+                    worker.process_job(mock_db, 700 + idx, f"https://example.com/jobs/{idx}", "token123")
+                    mock_success.assert_not_called()
+                    mock_snippet.assert_called_once()
+                    assert mock_snippet.call_args[1]["unsupported"] is True
+                    assert "fallback/interstitial" in mock_snippet.call_args[0][3]
 
 @patch('app.services.scraper.firecrawl.FirecrawlClient.scrape')
 @patch('app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_credit', return_value=True)

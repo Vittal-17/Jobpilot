@@ -67,3 +67,47 @@ def test_effective_budget_calculation_weekly_and_monthly():
     policy.safety_budget.monthly = 800
     assert policy.get_effective_limit('weekly') == 200
     assert policy.get_effective_limit('monthly') == 800
+
+
+def test_firecrawl_policy_defaults():
+    from app.core.config import settings
+    orig_cap = settings.firecrawl_monthly_automation_cap
+    orig_budget = settings.firecrawl_monthly_budget
+    orig_reserve = settings.firecrawl_reserved_credits
+    try:
+        settings.firecrawl_monthly_automation_cap = 900
+        settings.firecrawl_monthly_budget = 1000
+        settings.firecrawl_reserved_credits = 100
+
+        policy_fc = get_provider_policy("firecrawl")
+        policy_fcm = get_provider_policy("firecrawl_monthly")
+
+        for p in (policy_fc, policy_fcm):
+            assert p.provider_ceiling.monthly == 1000
+            assert p.account_ceiling.monthly == 1000
+            assert p.safety_budget.monthly == 900
+            assert p.get_effective_limit("monthly") == 900
+            assert p.get_effective_limit("daily") is None
+            assert p.get_effective_limit("minute") is None
+            assert p.get_effective_limit("lifetime") is None
+    finally:
+        settings.firecrawl_monthly_automation_cap = orig_cap
+        settings.firecrawl_monthly_budget = orig_budget
+        settings.firecrawl_reserved_credits = orig_reserve
+
+
+def test_firecrawl_policy_tight_budget():
+    from app.core.config import settings
+    orig_cap = settings.firecrawl_monthly_automation_cap
+    orig_budget = settings.firecrawl_monthly_budget
+    try:
+        settings.firecrawl_monthly_automation_cap = 900
+        settings.firecrawl_monthly_budget = 5
+
+        policy = get_provider_policy("firecrawl")
+        assert policy.provider_ceiling.monthly == 5
+        assert policy.safety_budget.monthly == 5
+        assert policy.get_effective_limit("monthly") == 5
+    finally:
+        settings.firecrawl_monthly_automation_cap = orig_cap
+        settings.firecrawl_monthly_budget = orig_budget

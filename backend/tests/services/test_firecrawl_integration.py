@@ -12,7 +12,8 @@ import respx
 
 def clear_db():
     db = SessionLocal()
-    # Clean up quota rows
+    # Clean up quota rows and operational logs
+    db.execute(text("DELETE FROM firecrawl_operations"))
     db.execute(text("DELETE FROM provider_usage WHERE provider_name = 'firecrawl_monthly'"))
     # Clean up any jobs created by firecrawl tests (using source = 'test_firecrawl' or test prefixes)
     db.execute(text("DELETE FROM job_enrichments WHERE job_id IN (SELECT id FROM jobs WHERE source = 'test_firecrawl' OR source_job_id LIKE 'test_fc_%')"))
@@ -25,9 +26,15 @@ def clear_db():
 
 @pytest.fixture(autouse=True)
 def run_around_tests():
+    orig_key = settings.firecrawl_api_key
+    orig_budget = settings.firecrawl_monthly_budget
     clear_db()
-    yield
-    clear_db()
+    try:
+        yield
+    finally:
+        settings.firecrawl_api_key = orig_key
+        settings.firecrawl_monthly_budget = orig_budget
+        clear_db()
 
 def test_quota_atomicity_and_persistence():
     settings.firecrawl_api_key = "test_key"
@@ -215,13 +222,24 @@ def test_real_402_synchronization_via_process_job(mock_scrape):
         worker.process_job(db, job_id, "http://a.com", token)
         mock_scrape.assert_called_once()
 
-    # Assert DB is now at 1000
+    # Assert provider_usage remains at real reserved amount (1 pre-existing + 1 reserved for job = 2), never 1000
     synced = db.execute(text("SELECT request_count FROM provider_usage WHERE provider_name = 'firecrawl_monthly' AND usage_date = DATE_TRUNC('month', CURRENT_DATE)::DATE")).scalar()
-    assert synced == 1000
+    assert synced == 2
+    assert synced != 1000
 
     # Also assert status is 'unsupported'
     status = db.execute(text("SELECT status FROM job_enrichments WHERE job_id = :id"), {"id": job_id}).scalar()
     assert status == 'unsupported'
+
+    # Assert operational event was recorded in firecrawl_operations
+    last_op = db.execute(text("SELECT status FROM firecrawl_operations WHERE operation = 'enrichment' ORDER BY id DESC LIMIT 1")).scalar()
+    assert last_op == 'payment_required'
+
+    # Assert subsequent reservations fail closed without touching provider_usage
+    from app.services.ingestion import acquire_provider_request_slot
+    assert acquire_provider_request_slot(db, "firecrawl_monthly", cost_units=1) is False
+    post_block_usage = db.execute(text("SELECT request_count FROM provider_usage WHERE provider_name = 'firecrawl_monthly' AND usage_date = DATE_TRUNC('month', CURRENT_DATE)::DATE")).scalar()
+    assert post_block_usage == 2
 
     db.close()
 
@@ -405,5 +423,135 @@ def test_realistic_job_with_chrome_enriches_successfully(mock_scrape):
     job_row = db.execute(text("SELECT description, description_is_snippet FROM jobs WHERE id = :id"), {"id": job_id}).fetchone()
     assert job_row[0] == realistic_content
     assert job_row[1] is False
+
+    db.close()
+
+
+@patch('app.services.scraper.firecrawl.FirecrawlClient.scrape')
+def test_js_fallback_interstitial_falls_to_snippet_without_mutating_description(mock_scrape):
+    settings.firecrawl_api_key = "test_key"
+    settings.firecrawl_monthly_budget = 1000
+
+    db = SessionLocal()
+    worker = EnrichmentWorker(max_attempts=3)
+
+    src_id = f"test_fc_fallback_{uuid.uuid4().hex}"
+    token = str(uuid.uuid4())
+    initial_snippet = "Original search snippet for Senior Backend Engineer (Python)"
+    job_id = db.execute(text("""
+        INSERT INTO jobs (title, company, source, source_job_id, description, description_is_snippet, discovered_at, created_at, updated_at)
+        VALUES ('Senior Backend Engineer', 'Pythonic Labs', 'test_firecrawl', :src_id, :desc, TRUE, NOW(), NOW(), NOW())
+        RETURNING id
+    """), {"src_id": src_id, "desc": initial_snippet}).scalar()
+
+    db.execute(text("""
+        INSERT INTO job_enrichments (job_id, status, url, lease_token, lease_expires_at, attempts, created_at, updated_at)
+        VALUES (:id, 'in_progress', 'https://www.python.org/jobs/599', :token, NOW() + INTERVAL '1 hour', 0, NOW(), NOW())
+    """), {"id": job_id, "token": token})
+    db.commit()
+
+    fallback_content = (
+        "# Python Job Board\n\n"
+        "**Notice:** This page displays a fallback because interactive scripts did not run. "
+        "Possible causes include disabled JavaScript or failure to load scripts or stylesheets.\n\n"
+        "## Senior Backend Engineer\n\n"
+        "Pythonic Labs is seeking a Senior Backend Engineer to develop high-performance microservices.\n\n"
+        "**Responsibilities:**\n"
+        "- Build and maintain distributed REST and gRPC services\n"
+        "- Design efficient SQL schemas in PostgreSQL\n"
+        "**Requirements:**\n"
+        "- 4+ years of backend development with Python\n"
+    )
+    mock_scrape.return_value = fallback_content
+
+    with patch.object(worker.ssrf_client, 'fetch') as mock_fetch:
+        mock_resp = httpx.Response(403, request=httpx.Request("GET", "https://www.python.org/jobs/599"))
+        mock_fetch.side_effect = httpx.HTTPStatusError("403", request=mock_resp.request, response=mock_resp)
+
+        worker.process_job(db, job_id, "https://www.python.org/jobs/599", token)
+
+    # Verify job_enrichments dropped to unsupported
+    enrichment_row = db.execute(text("SELECT status, error_reason FROM job_enrichments WHERE job_id = :id"), {"id": job_id}).fetchone()
+    assert enrichment_row[0] == "unsupported"
+    assert "fallback/interstitial" in enrichment_row[1]
+
+    # Verify jobs table was NOT mutated with the fallback content
+    job_row = db.execute(text("SELECT description, description_is_snippet FROM jobs WHERE id = :id"), {"id": job_id}).fetchone()
+    assert job_row[0] == initial_snippet
+    assert job_row[1] is True
+
+    # Verify telemetry records failed operation
+    op = db.execute(text("""
+        SELECT operation, cost_units, status FROM firecrawl_operations
+        ORDER BY id DESC LIMIT 1
+    """)).fetchone()
+    assert op[0] == "enrichment"
+    assert op[1] == 1
+    assert op[2] == "failed"
+
+    db.close()
+
+
+@patch('app.services.scraper.firecrawl.FirecrawlClient.scrape')
+def test_realistic_python_job_enriches_successfully_without_fallback_marker(mock_scrape):
+    settings.firecrawl_api_key = "test_key"
+    settings.firecrawl_monthly_budget = 1000
+
+    db = SessionLocal()
+    worker = EnrichmentWorker(max_attempts=3)
+
+    src_id = f"test_fc_py_valid_{uuid.uuid4().hex}"
+    token = str(uuid.uuid4())
+    job_id = db.execute(text("""
+        INSERT INTO jobs (title, company, source, source_job_id, description, description_is_snippet, discovered_at, created_at, updated_at)
+        VALUES ('Python Platform Engineer', 'CloudScale', 'test_firecrawl', :src_id, 'Initial snippet', TRUE, NOW(), NOW(), NOW())
+        RETURNING id
+    """), {"src_id": src_id}).scalar()
+
+    db.execute(text("""
+        INSERT INTO job_enrichments (job_id, status, url, lease_token, lease_expires_at, attempts, created_at, updated_at)
+        VALUES (:id, 'in_progress', 'https://example.com/careers/python-platform', :token, NOW() + INTERVAL '1 hour', 0, NOW(), NOW())
+    """), {"id": job_id, "token": token})
+    db.commit()
+
+    realistic_py_content = (
+        "# Python Platform Engineer\n\n"
+        "CloudScale Technologies | Remote\n\n"
+        "We are looking for an experienced Python Platform Engineer to architect our next-generation data services.\n\n"
+        "### Key Responsibilities\n"
+        "- Architect, implement, and maintain scalable backend services using FastAPI and SQLAlchemy\n"
+        "- Build event-driven streaming pipelines with Apache Kafka\n"
+        "- Optimize high-concurrency database transactions in PostgreSQL\n\n"
+        "### Qualifications\n"
+        "- Bachelor's degree in Computer Science or equivalent practical experience\n"
+        "- 3+ years writing asynchronous Python code in production\n"
+        "- Demonstrated knowledge of distributed systems and container orchestration\n"
+    )
+    mock_scrape.return_value = realistic_py_content
+
+    with patch.object(worker.ssrf_client, 'fetch') as mock_fetch:
+        mock_resp = httpx.Response(403, request=httpx.Request("GET", "https://example.com/careers/python-platform"))
+        mock_fetch.side_effect = httpx.HTTPStatusError("403", request=mock_resp.request, response=mock_resp)
+
+        worker.process_job(db, job_id, "https://example.com/careers/python-platform", token)
+
+    # Verify job_enrichments transitioned to success
+    enrichment_row = db.execute(text("SELECT status, error_reason FROM job_enrichments WHERE job_id = :id"), {"id": job_id}).fetchone()
+    assert enrichment_row[0] == "success"
+    assert enrichment_row[1] is None
+
+    # Verify jobs table has the enriched full description and description_is_snippet is False
+    job_row = db.execute(text("SELECT description, description_is_snippet FROM jobs WHERE id = :id"), {"id": job_id}).fetchone()
+    assert job_row[0] == realistic_py_content
+    assert job_row[1] is False
+
+    # Verify telemetry records success operation
+    op = db.execute(text("""
+        SELECT operation, cost_units, status FROM firecrawl_operations
+        ORDER BY id DESC LIMIT 1
+    """)).fetchone()
+    assert op[0] == "enrichment"
+    assert op[1] == 1
+    assert op[2] == "success"
 
     db.close()

@@ -11,6 +11,7 @@ from app.db.models.user_profile import UserProfile
 from app.db.models.user_search import UserSearch
 from app.db.models.recommendation_history import RecommendationHistoryModel
 from app.db.models.user import User
+from app.core.config import settings
 
 def test_request_exception_falls_back_to_snippet(engine, monkeypatch):
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -30,6 +31,8 @@ def test_request_exception_falls_back_to_snippet(engine, monkeypatch):
         db.commit()
     except Exception:
         db.rollback()
+
+    monkeypatch.setattr(settings, "firecrawl_enabled", False)
 
     try:
         # Create User, Profile and active search

@@ -13,6 +13,7 @@ from .user_search import UserSearch
 from .job_source import JobSourceModel
 from .recommendation_history import RecommendationHistoryModel
 from .notification_delivery import NotificationDeliveryModel
+from .firecrawl_operation import FirecrawlOperationModel
 
 __all__ = [
     "JobModel",
@@ -29,5 +30,6 @@ __all__ = [
     "UserSearch",
     "JobSourceModel",
     "RecommendationHistoryModel",
-    "NotificationDeliveryModel"
+    "NotificationDeliveryModel",
+    "FirecrawlOperationModel",
 ]

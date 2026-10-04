@@ -77,9 +77,12 @@ def engine():
     from alembic.config import Config
     from alembic import command
 
-    alembic_cfg = Config("backend/alembic.ini")
+    ini_path = "alembic.ini" if os.path.exists("alembic.ini") else "backend/alembic.ini"
+    script_loc = "alembic" if os.path.exists("alembic") else "backend/alembic"
+
+    alembic_cfg = Config(ini_path)
     alembic_cfg.set_main_option("sqlalchemy.url", TEST_DATABASE_URL)
-    alembic_cfg.set_main_option("script_location", "backend/alembic")
+    alembic_cfg.set_main_option("script_location", script_loc)
 
     # Drop all tables manually just in case to start clean
     Base.metadata.drop_all(bind=engine)

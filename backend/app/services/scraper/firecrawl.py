@@ -13,6 +13,9 @@ class FirecrawlError(Exception):
         super().__init__(message)
         self.status_code = status_code
 
+class FirecrawlPayloadError(FirecrawlError):
+    pass
+
 class FirecrawlClient:
     def __init__(self, api_key: str, timeout: int = 30000):
         self.api_key = api_key
@@ -52,6 +55,62 @@ class FirecrawlClient:
                 if not isinstance(markdown, str):
                     markdown = ""
                 return markdown
+
+        except httpx.TimeoutException:
+            raise FirecrawlError("Firecrawl request timed out", status_code=408)
+        except httpx.RequestError as e:
+            raise FirecrawlError(f"Firecrawl request failed: {e}", status_code=None)
+
+    def search(self, query: str, limit: int = 10) -> list[dict]:
+        if not self.api_key:
+            raise FirecrawlError("FIRECRAWL_API_KEY is not configured", status_code=None)
+
+        if not query or not query.strip():
+            return []
+
+        payload = {
+            "query": query.strip(),
+            "limit": limit,
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            with httpx.Client(timeout=self.timeout / 1000.0) as client:
+                resp = client.post(
+                    "https://api.firecrawl.dev/v2/search",
+                    json=payload,
+                    headers=headers,
+                )
+                if resp.status_code != 200:
+                    raise FirecrawlError(f"Firecrawl returned {resp.status_code}: {resp.text}", status_code=resp.status_code)
+
+                try:
+                    data = resp.json()
+                except Exception as e:
+                    raise FirecrawlPayloadError(f"Firecrawl returned invalid JSON: {e}") from e
+
+                if not isinstance(data, dict):
+                    raise FirecrawlPayloadError("Firecrawl response is not a valid JSON object")
+
+                if not data.get("success", False):
+                    raise FirecrawlPayloadError(f"Firecrawl search failed: {data}")
+
+                raw_data = data.get("data")
+                if raw_data is None:
+                    return []
+
+                if isinstance(raw_data, dict):
+                    raw_results = raw_data.get("web")
+                    if not isinstance(raw_results, list):
+                        raise FirecrawlPayloadError("Firecrawl search results payload 'data.web' is missing or not a list")
+                    return raw_results
+                elif isinstance(raw_data, list):
+                    return raw_data
+                else:
+                    raise FirecrawlPayloadError("Firecrawl search results payload 'data' is neither a list nor a dictionary containing 'web'")
 
         except httpx.TimeoutException:
             raise FirecrawlError("Firecrawl request timed out", status_code=408)

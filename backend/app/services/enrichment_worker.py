@@ -26,17 +26,39 @@ from app.services.scraper.extractor import extract_job_description, ExtractionEr
 logger = logging.getLogger(__name__)
 
 class EnrichmentWorker:
+    """
+    Background worker that claims pending job enrichment tasks and scrapes descriptions.
+    Enforces a two-tier extraction pipeline:
+      Tier 1: Direct native fetch via SSRF-safe client.
+      Tier 2: Firecrawl Scrape fallback when native fetch is blocked or anti-botted.
+      Terminal Fallback: Keep snippet if Firecrawl is exhausted, disabled, or capped.
+
+    Each invocation of `claim_and_process(db)` represents a canonical batch execution unit.
+    The per-run credit cap (`firecrawl_enrichment_max_credits_per_run`, default 10) is
+    enforced strictly per execution unit (batch), resetting at the start of each batch claim.
+    Overall monthly consumption remains authoritatively capped by the 900-credit ceiling
+    in `provider_usage`.
+    """
     def __init__(self, max_attempts=3, claim_batch_size=10, worker_id: str | None = None):
         self.max_attempts = max_attempts
         self.claim_batch_size = claim_batch_size
         self.worker_id = worker_id or os.environ.get("WORKER_ID") or f"{socket.gethostname()}:{os.getpid()}"
         self.ssrf_client = SSRFClient()
+        self.credits_used_this_run = 0
 
     def run(self):
         with SessionLocal() as db:
             self.claim_and_process(db)
 
     def claim_and_process(self, db: Session):
+        """
+        Canonical batch execution unit for the enrichment worker.
+        Claims a batch of up to `claim_batch_size` pending jobs and processes them.
+        Resets `self.credits_used_this_run = 0` at the start of each execution unit,
+        authoritatively capping Firecrawl credits used within this batch to
+        `settings.firecrawl_enrichment_max_credits_per_run`.
+        """
+        self.credits_used_this_run = 0
         # Terminalize expired tasks that exceeded max attempts
         db.execute(text('''
             UPDATE job_enrichments SET
@@ -90,43 +112,21 @@ class EnrichmentWorker:
 
     def _reserve_firecrawl_credit(self, _ignored_db: Session) -> bool:
         from app.core.config import settings
-        if not settings.firecrawl_api_key or settings.firecrawl_monthly_budget <= 0:
+        if not getattr(settings, "firecrawl_enabled", True) or not settings.firecrawl_api_key or settings.firecrawl_monthly_budget <= 0:
             return False
 
+        from app.services.ingestion import acquire_provider_request_slot
         from app.db.database import SessionLocal
         with SessionLocal() as local_db:
-            try:
-                stmt = text("""
-                    INSERT INTO provider_usage (provider_name, usage_date, request_count)
-                    VALUES ('firecrawl_monthly', DATE_TRUNC('month', CURRENT_DATE)::DATE, 1)
-                    ON CONFLICT (provider_name, usage_date)
-                    DO UPDATE SET request_count = provider_usage.request_count + 1
-                    WHERE provider_usage.request_count < :monthly_limit
-                    RETURNING request_count;
-                """)
-                res = local_db.execute(stmt, {"monthly_limit": settings.firecrawl_monthly_budget}).scalar()
-                local_db.commit()
-                return res is not None
-            except Exception as e:
-                logger.error(f"Failed to reserve Firecrawl credit: {e}")
-                local_db.rollback()
-                return False
+            return acquire_provider_request_slot(local_db, "firecrawl_monthly", cost_units=1)
 
     def _sync_firecrawl_budget(self, _ignored_db: Session):
-        from app.core.config import settings
-        from app.db.database import SessionLocal
-        with SessionLocal() as local_db:
-            try:
-                stmt = text("""
-                    UPDATE provider_usage
-                    SET request_count = GREATEST(request_count, :monthly_limit)
-                    WHERE provider_name = 'firecrawl_monthly' AND usage_date = DATE_TRUNC('month', CURRENT_DATE)::DATE;
-                """)
-                local_db.execute(stmt, {"monthly_limit": settings.firecrawl_monthly_budget})
-                local_db.commit()
-            except Exception as e:
-                logger.error(f"Failed to sync Firecrawl budget: {e}")
-                local_db.rollback()
+        """
+        Record operational payment_required exhaustion state for Firecrawl.
+        Never modifies provider_usage, ensuring credit accounting remains strictly authoritative.
+        """
+        from app.services.firecrawl_quota import record_firecrawl_operation
+        record_firecrawl_operation(operation="enrichment", cost_units=1, status="payment_required")
 
     def process_job(self, db: Session, job_id: int, url: str, token: str, source_execution_id: int | None = None):
         fallback_reason = None
@@ -165,13 +165,31 @@ class EnrichmentWorker:
             return
 
         if fallback_reason:
+            from app.core.config import settings
+            from app.services.firecrawl_quota import record_firecrawl_operation
+
+            max_enrichment_credits = getattr(settings, "firecrawl_enrichment_max_credits_per_run", 10)
+            if self.credits_used_this_run + 1 > max_enrichment_credits:
+                logger.info(
+                    f"Enrichment per-run Firecrawl credit limit reached ({self.credits_used_this_run}/{max_enrichment_credits}). "
+                    f"Skipping Firecrawl and falling back to snippet for job {job_id}."
+                )
+                self.complete_with_snippet(
+                    db, job_id, token,
+                    f"Fallback needed ({fallback_reason}) but per-run credit cap reached",
+                    source_execution_id,
+                    unsupported=True
+                )
+                return
+
             if not self._reserve_firecrawl_credit(db):
                 logger.info(f"Firecrawl budget exhausted or disabled. Snippet fallback for job {job_id}.")
                 self.complete_with_snippet(db, job_id, token, f"Fallback needed ({fallback_reason}) but budget exhausted", source_execution_id, unsupported=True)
                 return
 
+            self.credits_used_this_run += 1
+
             try:
-                from app.core.config import settings
                 from app.services.scraper.firecrawl import FirecrawlClient, FirecrawlError
 
                 fc_client = FirecrawlClient(settings.firecrawl_api_key)
@@ -194,21 +212,40 @@ class EnrichmentWorker:
                 if any(m in lower_md for m in redirect_markers):
                     raise FirecrawlError("Firecrawl markdown contains redirect/interstitial markers", status_code=200)
 
+                fallback_markers = [
+                    "interactive scripts did not run",
+                    "interactive scripts could not run",
+                    "interactive scripts failed to run",
+                    "interactive scripts failed to execute",
+                    "this page displays a fallback",
+                    "page displays a fallback",
+                    "displays a fallback because",
+                    "fallback because interactive scripts",
+                    "failure to load scripts or stylesheets",
+                    "disabled javascript or failure to load",
+                ]
+                if any(m in lower_md for m in fallback_markers):
+                    raise FirecrawlError("Firecrawl markdown contains script fallback/interstitial markers", status_code=200)
+
                 if len(markdown) < 200:
                     raise FirecrawlError("Firecrawl markdown too short, proxy likely blocked", status_code=200)
 
+                record_firecrawl_operation(operation="enrichment", cost_units=1, status="success")
                 self.complete_success(db, job_id, token, markdown, source_execution_id)
 
             except FirecrawlError as e:
                 if e.status_code == 402:
-                    logger.error("Firecrawl returned 402 Payment Required. Syncing budget to ceiling.")
+                    logger.error("Firecrawl returned 402 Payment Required. Recording exhaustion state.")
                     self._sync_firecrawl_budget(db)
                     self.complete_with_snippet(db, job_id, token, f"Firecrawl exhausted: {e}", source_execution_id, unsupported=True)
                 elif e.status_code is None or e.status_code in (408, 429) or e.status_code >= 500:
+                    record_firecrawl_operation(operation="enrichment", cost_units=1, status="failed")
                     self.complete_failure(db, job_id, token, f"Firecrawl transient error: {e}")
                 else:
+                    record_firecrawl_operation(operation="enrichment", cost_units=1, status="failed")
                     self.complete_with_snippet(db, job_id, token, f"Firecrawl content failure: {e}", source_execution_id, unsupported=True)
             except Exception as e:
+                record_firecrawl_operation(operation="enrichment", cost_units=1, status="failed")
                 self.complete_with_snippet(db, job_id, token, f"Firecrawl unhandled error: {e}", source_execution_id, unsupported=True)
 
     def complete_success(self, db: Session, job_id: int, token: str, new_desc: str, source_execution_id: int | None = None):

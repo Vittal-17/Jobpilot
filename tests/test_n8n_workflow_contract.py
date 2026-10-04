@@ -468,3 +468,139 @@ def test_send_start_fails_closed_on_conflict():
     assert auth_outputs[0][0]["node"] == "Send Telegram", "Authorized output 0 must connect to Send Telegram"
     if len(auth_outputs) > 1:
         assert len(auth_outputs[1]) == 0, "Unauthorized output 1 must have no downstream targets (0 items sent)"
+
+
+def test_firecrawl_discovery_workflow_contract():
+    workflows = json.loads(
+        Path("backend/JP___Firecrawl_Discovery.json").read_text(encoding="utf-8")
+    )
+    assert len(workflows) == 1
+    workflow = workflows[0]
+    assert workflow["active"] is False, "Discovery workflow must not be activated automatically"
+    assert workflow["id"] == "workflow-firecrawl-discovery"
+
+    nodes = {node["name"]: node for node in workflow["nodes"]}
+    assert "Schedule Trigger" in nodes
+    assert "Plan Queries" in nodes
+    assert "Check If Enabled" in nodes
+    assert "Execute Discovery" in nodes
+    assert "Execution Telemetry" in nodes
+    assert "Stop" in nodes
+
+    trigger = nodes["Schedule Trigger"]
+    assert trigger["type"] == "n8n-nodes-base.scheduleTrigger"
+    rule_interval = trigger["parameters"]["rule"]["interval"][0]
+    assert rule_interval.get("field") == "hours"
+    assert rule_interval.get("hoursInterval") == 24, "Schedule Trigger must be configured for daily cadence (24 hours)"
+
+    plan_node = nodes["Plan Queries"]
+    assert plan_node["type"] == "n8n-nodes-base.httpRequest"
+    assert plan_node["parameters"]["method"] == "POST"
+    assert plan_node["parameters"]["url"].endswith("/ingestion/internal/firecrawl-discovery/plan")
+    assert plan_node["parameters"]["authentication"] == "predefinedCredentialType"
+    assert plan_node["parameters"]["nodeCredentialType"] == "httpHeaderAuth"
+    assert plan_node["credentials"]["httpHeaderAuth"]["name"] == "JP - FastAPI Internal API"
+
+    check_node = nodes["Check If Enabled"]
+    assert check_node["type"] == "n8n-nodes-base.if"
+    conditions = check_node["parameters"]["conditions"]["conditions"]
+    assert any("enabled" in c.get("leftValue", "") for c in conditions)
+
+    exec_node = nodes["Execute Discovery"]
+    assert exec_node["type"] == "n8n-nodes-base.httpRequest"
+    assert exec_node["parameters"]["method"] == "POST"
+    assert exec_node["parameters"]["url"].endswith("/ingestion/internal/firecrawl-discovery/run")
+    assert exec_node["parameters"]["authentication"] == "predefinedCredentialType"
+    assert exec_node["parameters"]["nodeCredentialType"] == "httpHeaderAuth"
+    assert exec_node["credentials"]["httpHeaderAuth"]["name"] == "JP - FastAPI Internal API"
+    assert exec_node.get("continueOnFail") is True, "Execute Discovery must have continueOnFail: true"
+
+    telemetry_node = nodes["Execution Telemetry"]
+    assert telemetry_node["type"] == "n8n-nodes-base.code"
+    assert "status" in telemetry_node["parameters"]["jsCode"]
+    assert "credits_consumed" in telemetry_node["parameters"]["jsCode"]
+    assert "credits_reserved" in telemetry_node["parameters"]["jsCode"]
+
+    stop_node = nodes["Stop"]
+    assert stop_node["type"] == "n8n-nodes-base.code"
+
+    connections = workflow["connections"]
+    assert connections["Schedule Trigger"]["main"][0][0]["node"] == "Plan Queries"
+    assert connections["Plan Queries"]["main"][0][0]["node"] == "Check If Enabled"
+    assert connections["Check If Enabled"]["main"][0][0]["node"] == "Execute Discovery"
+    assert connections["Check If Enabled"]["main"][1][0]["node"] == "Stop"
+    assert connections["Execute Discovery"]["main"][0][0]["node"] == "Execution Telemetry"
+
+    # Zero secrets serialized
+    serialized = json.dumps(workflow).lower()
+    assert "firecrawl_api_key" not in serialized
+    assert "fc-" not in serialized
+    assert "secret" not in serialized
+    assert "password" not in serialized
+
+
+def test_firecrawl_discovery_telemetry_js_execution():
+    import subprocess
+    import tempfile
+
+    workflows = json.loads(
+        Path("backend/JP___Firecrawl_Discovery.json").read_text(encoding="utf-8")
+    )
+    workflow = workflows[0]
+    nodes = {node["name"]: node for node in workflow["nodes"]}
+    js_code = nodes["Execution Telemetry"]["parameters"]["jsCode"]
+
+    test_payload = {
+        "status": "completed",
+        "query_count": 2,
+        "attempted_queries": 2,
+        "successful_queries": 2,
+        "candidates_found": 20,
+        "candidates_accepted": 15,
+        "candidates_rejected": 5,
+        "ingestion": {
+            "created": 15,
+            "duplicates": 3,
+            "invalid": 2,
+            "failed": 0
+        },
+        "credits_consumed": 4,
+        "credits_reserved": 4,
+        "estimated_credits": 4
+    }
+
+    wrapper = f"""
+    const $input = {{
+        first: () => ({{
+            json: {json.dumps(test_payload)}
+        }})
+    }};
+
+    function run() {{
+        {js_code}
+    }}
+
+    console.log(JSON.stringify(run()));
+    """
+
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.js', delete=False) as f:
+        f.write(wrapper)
+        temp_path = f.name
+
+    try:
+        result = subprocess.run(["node", temp_path], capture_output=True, text=True, check=True)
+        output = json.loads(result.stdout)
+        data = output["json"]
+        assert data["status"] == "completed"
+        assert data["query_count"] == 2
+        assert data["attempted_queries"] == 2
+        assert data["successful_queries"] == 2
+        assert data["candidates_found"] == 20
+        assert data["candidates_accepted"] == 15
+        assert data["candidates_rejected"] == 5
+        assert data["credits_consumed"] == 4
+        assert data["credits_reserved"] == 4
+        assert data["estimated_credits"] == 4
+        assert data["ingestion"]["created"] == 15
+    finally:
+        Path(temp_path).unlink()
