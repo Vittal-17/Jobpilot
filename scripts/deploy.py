@@ -183,6 +183,7 @@ def validate_secrets(config: dict):
 
     optional_keys = [
         "ADZUNA_APP_ID", "ADZUNA_APP_KEY", "JOOBLE_IN_API_KEY",
+        "FIRECRAWL_API_KEY", "TELEGRAM_CHAT_ID",
         "BACKUP_ENCRYPTION_KEY", "BACKUP_S3_ACCESS_KEY", "BACKUP_S3_SECRET_KEY"
     ]
     for key in optional_keys:
