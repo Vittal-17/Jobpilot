@@ -92,7 +92,7 @@ def test_plan_discovery_queries_from_user_search():
         # Create active user if none exists
         user = db.query(User).filter(User.is_active == True).first()
         if not user:
-            user = User(email="test_discovery@example.com", hashed_password="pw", is_active=True)
+            user = User(email="test_discovery@example.com", password_hash="pw", is_active=True)
             db.add(user)
             db.commit()
 

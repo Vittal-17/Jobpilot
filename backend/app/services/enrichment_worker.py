@@ -212,6 +212,21 @@ class EnrichmentWorker:
                 if any(m in lower_md for m in redirect_markers):
                     raise FirecrawlError("Firecrawl markdown contains redirect/interstitial markers", status_code=200)
 
+                fallback_markers = [
+                    "interactive scripts did not run",
+                    "interactive scripts could not run",
+                    "interactive scripts failed to run",
+                    "interactive scripts failed to execute",
+                    "this page displays a fallback",
+                    "page displays a fallback",
+                    "displays a fallback because",
+                    "fallback because interactive scripts",
+                    "failure to load scripts or stylesheets",
+                    "disabled javascript or failure to load",
+                ]
+                if any(m in lower_md for m in fallback_markers):
+                    raise FirecrawlError("Firecrawl markdown contains script fallback/interstitial markers", status_code=200)
+
                 if len(markdown) < 200:
                     raise FirecrawlError("Firecrawl markdown too short, proxy likely blocked", status_code=200)
 

@@ -57,18 +57,18 @@ def clean_environment():
     with SessionLocal() as db:
         clear_test_db(db)
 
-    yield
-
-    with SessionLocal() as db:
-        clear_test_db(db)
-
-    settings.firecrawl_api_key = orig_key
-    settings.firecrawl_enabled = orig_enabled
-    settings.firecrawl_monthly_budget = orig_budget
-    settings.firecrawl_monthly_automation_cap = orig_cap
-    settings.firecrawl_reserved_credits = orig_reserve
-    settings.firecrawl_discovery_enabled = orig_discovery_enabled
-    settings.firecrawl_enrichment_max_credits_per_run = orig_enrich_cap
+    try:
+        yield
+    finally:
+        settings.firecrawl_api_key = orig_key
+        settings.firecrawl_enabled = orig_enabled
+        settings.firecrawl_monthly_budget = orig_budget
+        settings.firecrawl_monthly_automation_cap = orig_cap
+        settings.firecrawl_reserved_credits = orig_reserve
+        settings.firecrawl_discovery_enabled = orig_discovery_enabled
+        settings.firecrawl_enrichment_max_credits_per_run = orig_enrich_cap
+        with SessionLocal() as db:
+            clear_test_db(db)
 
 
 # 1. Model & Constraints
