@@ -1,3 +1,4 @@
+import json
 import logging
 logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends, HTTPException, Header
@@ -504,12 +505,23 @@ def internal_run_firecrawl_discovery(
         logger.exception("Failed to execute Firecrawl discovery run")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-from app.schemas.firecrawl import FirecrawlTelemetryResponse
+from app.schemas.firecrawl import FirecrawlTelemetryResponse, FirecrawlFunnelResponse, FirecrawlStageCounters
 from app.services.firecrawl_quota import get_firecrawl_budget_state
 
 @router.get("/internal/firecrawl-telemetry", response_model=FirecrawlTelemetryResponse, dependencies=[Depends(verify_api_key)])
 def internal_get_firecrawl_telemetry(db: Session = Depends(get_db)):
     state = get_firecrawl_budget_state(db)
+    # Global stage counters cannot be truthfully proven from un-attributed historical data.
+    # Do not mislabel global job counts as validated, eligible, or recommended stages.
+    # Authoritative, execution-attributed stage metrics are served by /internal/firecrawl-discovery/funnel.
+    stage_counters = FirecrawlStageCounters(
+        candidates_found=None,
+        validated_individual=None,
+        enriched=None,
+        eligible=None,
+        recommended=None,
+    )
+
     return FirecrawlTelemetryResponse(
         monthly_cap=state["monthly_cap"],
         monthly_used=state["monthly_used"],
@@ -520,7 +532,164 @@ def internal_get_firecrawl_telemetry(db: Session = Depends(get_db)):
         quota_denied=state["quota_denied"],
         last_operation=state["last_operation"],
         is_exhausted=state["is_exhausted"],
+        stage_counters=stage_counters,
     )
+
+@router.get("/internal/firecrawl-discovery/funnel", response_model=FirecrawlFunnelResponse, dependencies=[Depends(verify_api_key)])
+def internal_get_firecrawl_discovery_funnel(execution_id: int | None = None, db: Session = Depends(get_db)):
+    try:
+        rejections_by_reason: dict[str, int] = {}
+        if execution_id is not None:
+            exec_row = db.execute(
+                text("SELECT id, error_message, jobs_fresher_eligible FROM search_execution WHERE id = :eid"),
+                {"eid": execution_id}
+            ).mappings().first()
+            if not exec_row:
+                raise HTTPException(status_code=404, detail="Execution not found")
+
+            if exec_row["error_message"]:
+                try:
+                    parsed_err = json.loads(exec_row["error_message"])
+                    if isinstance(parsed_err, dict) and "rejections_by_reason" in parsed_err:
+                        rejections_by_reason.update(parsed_err["rejections_by_reason"])
+                except Exception:
+                    pass
+
+            enrich_rejections = db.execute(text("""
+                SELECT result_telemetry->>'reason' as r_reason, COUNT(*) as cnt
+                FROM job_enrichments
+                WHERE source_execution_id = :eid
+                  AND status = 'unsupported'
+                  AND result_telemetry->>'reason' IS NOT NULL
+                GROUP BY result_telemetry->>'reason'
+            """), {"eid": execution_id}).fetchall()
+            for r_row in enrich_rejections:
+                if r_row[0]:
+                    rejections_by_reason[r_row[0]] = rejections_by_reason.get(r_row[0], 0) + r_row[1]
+
+            jobs_stats = db.execute(text("""
+                SELECT
+                    COUNT(*) AS total_jobs,
+                    COUNT(*) FILTER (WHERE j.description_is_snippet = TRUE) AS snippet_jobs,
+                    COUNT(*) FILTER (WHERE j.description_is_snippet = FALSE) AS full_desc_jobs
+                FROM jobs j
+                JOIN job_enrichments e ON e.job_id = j.id
+                WHERE e.source_execution_id = :eid
+            """), {"eid": execution_id}).mappings().first() or {}
+
+            enrich_stats = db.execute(text("""
+                SELECT
+                    status,
+                    COUNT(*) as cnt
+                FROM job_enrichments
+                WHERE source_execution_id = :eid
+                GROUP BY status
+            """), {"eid": execution_id}).fetchall()
+            enrich_map = {row[0]: row[1] for row in enrich_stats}
+
+            rejected_listings_cnt = db.execute(text("""
+                SELECT COUNT(*)
+                FROM job_enrichments
+                WHERE source_execution_id = :eid
+                  AND status = 'unsupported'
+                  AND (error_reason LIKE 'rejected_listing_content%' OR result_telemetry->>'validation' = 'rejected_listing')
+            """), {"eid": execution_id}).scalar() or 0
+
+            fresher_eligible_cnt = exec_row["jobs_fresher_eligible"] or 0
+
+            recs_stats = db.execute(text("""
+                SELECT
+                    COUNT(*) AS total_recs,
+                    COUNT(*) FILTER (WHERE r.delivery_id IS NOT NULL) AS delivered_recs,
+                    COUNT(*) FILTER (WHERE r.delivery_id IS NULL) AS pending_recs
+                FROM recommendation_history r
+                JOIN jobs j ON j.id = r.job_id
+                JOIN job_enrichments e ON e.job_id = j.id
+                WHERE e.source_execution_id = :eid
+            """), {"eid": execution_id}).mappings().first() or {}
+
+        else:
+            jobs_stats = db.execute(text("""
+                SELECT
+                    COUNT(*) AS total_jobs,
+                    COUNT(*) FILTER (WHERE description_is_snippet = TRUE) AS snippet_jobs,
+                    COUNT(*) FILTER (WHERE description_is_snippet = FALSE) AS full_desc_jobs
+                FROM jobs
+                WHERE source = 'firecrawl'
+            """)).mappings().first() or {}
+
+            enrich_stats = db.execute(text("""
+                SELECT
+                    status,
+                    COUNT(*) as cnt
+                FROM job_enrichments e
+                JOIN jobs j ON j.id = e.job_id
+                WHERE j.source = 'firecrawl'
+                GROUP BY status
+            """)).fetchall()
+            enrich_map = {row[0]: row[1] for row in enrich_stats}
+
+            rejected_listings_cnt = db.execute(text("""
+                SELECT COUNT(*)
+                FROM job_enrichments e
+                JOIN jobs j ON j.id = e.job_id
+                WHERE j.source = 'firecrawl'
+                  AND e.status = 'unsupported'
+                  AND (e.error_reason LIKE 'rejected_listing_content%' OR e.result_telemetry->>'validation' = 'rejected_listing')
+            """)).scalar() or 0
+
+            fresher_eligible_cnt = db.execute(text("""
+                SELECT COALESCE(SUM(jobs_fresher_eligible), 0)
+                FROM search_execution
+                WHERE provider_name = 'firecrawl'
+            """)).scalar() or 0
+
+            recs_stats = db.execute(text("""
+                SELECT
+                    COUNT(*) AS total_recs,
+                    COUNT(*) FILTER (WHERE r.delivery_id IS NOT NULL) AS delivered_recs,
+                    COUNT(*) FILTER (WHERE r.delivery_id IS NULL) AS pending_recs
+                FROM recommendation_history r
+                JOIN jobs j ON j.id = r.job_id
+                WHERE j.source = 'firecrawl'
+            """)).mappings().first() or {}
+
+            exec_rejections = db.execute(text("""
+                SELECT error_message FROM search_execution
+                WHERE provider_name = 'firecrawl' AND error_message LIKE '%rejections_by_reason%'
+            """)).fetchall()
+            for (err_msg,) in exec_rejections:
+                if err_msg:
+                    try:
+                        p_err = json.loads(err_msg)
+                        if isinstance(p_err, dict) and "rejections_by_reason" in p_err:
+                            for r_k, r_v in p_err["rejections_by_reason"].items():
+                                rejections_by_reason[r_k] = rejections_by_reason.get(r_k, 0) + r_v
+                    except Exception:
+                        pass
+
+        return FirecrawlFunnelResponse(
+            execution_id=execution_id,
+            jobs_ingested=jobs_stats.get("total_jobs", 0),
+            jobs_snippet=jobs_stats.get("snippet_jobs", 0),
+            jobs_full_description=jobs_stats.get("full_desc_jobs", 0),
+            enrichments_pending=enrich_map.get("pending", 0),
+            enrichments_in_progress=enrich_map.get("in_progress", 0),
+            enrichments_success=enrich_map.get("success", 0),
+            enrichments_unsupported=enrich_map.get("unsupported", 0),
+            enrichments_failure=enrich_map.get("failure", 0),
+            listings_rejected_at_enrichment=rejected_listings_cnt,
+            fresher_eligible=fresher_eligible_cnt,
+            recommendations_total=recs_stats.get("total_recs", 0),
+            recommendations_delivered=recs_stats.get("delivered_recs", 0),
+            recommendations_pending=recs_stats.get("pending_recs", 0),
+            rejections_by_reason=rejections_by_reason,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to retrieve Firecrawl discovery funnel")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 class NotificationClaimRequest(BaseModel):
     user_id: int | None = None

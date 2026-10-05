@@ -14,7 +14,7 @@ def clear_db():
     db = SessionLocal()
     # Clean up quota rows and operational logs
     db.execute(text("DELETE FROM firecrawl_operations"))
-    db.execute(text("DELETE FROM provider_usage WHERE provider_name = 'firecrawl_monthly'"))
+    db.execute(text("DELETE FROM provider_usage WHERE provider_name IN ('firecrawl', 'firecrawl_monthly')"))
     # Clean up any jobs created by firecrawl tests (using source = 'test_firecrawl' or test prefixes)
     db.execute(text("DELETE FROM job_enrichments WHERE job_id IN (SELECT id FROM jobs WHERE source = 'test_firecrawl' OR source_job_id LIKE 'test_fc_%')"))
     db.execute(text("DELETE FROM jobs WHERE source = 'test_firecrawl' OR source_job_id LIKE 'test_fc_%'"))
@@ -28,12 +28,15 @@ def clear_db():
 def run_around_tests():
     orig_key = settings.firecrawl_api_key
     orig_budget = settings.firecrawl_monthly_budget
+    orig_enabled = getattr(settings, "firecrawl_enabled", False)
+    settings.firecrawl_enabled = True
     clear_db()
     try:
         yield
     finally:
         settings.firecrawl_api_key = orig_key
         settings.firecrawl_monthly_budget = orig_budget
+        settings.firecrawl_enabled = orig_enabled
         clear_db()
 
 def test_quota_atomicity_and_persistence():

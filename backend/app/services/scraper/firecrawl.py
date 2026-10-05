@@ -61,17 +61,31 @@ class FirecrawlClient:
         except httpx.RequestError as e:
             raise FirecrawlError(f"Firecrawl request failed: {e}", status_code=None)
 
-    def search(self, query: str, limit: int = 10) -> list[dict]:
+    def search(
+        self,
+        query: str,
+        limit: int = 10,
+        tbs: str | None = None,
+        country: str | None = None,
+        location: str | None = None,
+    ) -> list[dict]:
         if not self.api_key:
             raise FirecrawlError("FIRECRAWL_API_KEY is not configured", status_code=None)
 
         if not query or not query.strip():
             return []
 
-        payload = {
+        payload: dict[str, str | int] = {
             "query": query.strip(),
             "limit": limit,
         }
+        if tbs:
+            payload["tbs"] = tbs
+        if country:
+            payload["country"] = country
+        if location:
+            payload["location"] = location
+
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",

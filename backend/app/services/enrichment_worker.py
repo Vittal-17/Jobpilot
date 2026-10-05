@@ -20,10 +20,104 @@ from app.schemas.job import JobResponse
 from app.db.models.recommendation_history import RecommendationHistoryModel
 from app.db.models.user_profile import UserProfile
 from app.db.models.user_search import UserSearch
+import json
+import re
 from app.services.scraper.ssrf import SSRFClient, SSRFViolation
 from app.services.scraper.extractor import extract_job_description, ExtractionError
 
 logger = logging.getLogger(__name__)
+
+CONTENT_AGGREGATE_PATTERNS = [
+    re.compile(r'\b(?:showing\s+)?\d+[\d,+]*(?:\+)?\s*(?:python|backend|frontend|software|developer|engineer|fresher|entry\s*level)?\s*(?:jobs?|vacancies|openings|roles)\s*(?:found|available)?\b', re.IGNORECASE),
+    re.compile(r'\bpage\s+\d+\s+of\s+\d+\b', re.IGNORECASE),
+    re.compile(r'\bsort\s+by\s*:\s*(?:relevance|date)\b', re.IGNORECASE),
+    re.compile(r'\bshowing\s+jobs\s+for\b', re.IGNORECASE),
+    re.compile(r'\bcreate\s+job\s+alert\b', re.IGNORECASE),
+    re.compile(r'\bget\s+new\s+jobs\s+by\s+email\b', re.IGNORECASE),
+    re.compile(r'\b(?:find|search)\s+more\s+jobs\b', re.IGNORECASE),
+]
+
+BOT_OR_LOGIN_WALL_PATTERNS = [
+    re.compile(r'\b(?:please\s+enable\s+cookies|checking\s+your\s+browser|enable\s+javascript|just\s+a\s+moment\b|access\s+denied|verify\s+you\s+are\s+human|security\s+check|complete\s+the\s+captcha)\b', re.IGNORECASE),
+    re.compile(r'\b(?:please\s+log\s+in\s+to\s+view|sign\s+in\s+to\s+(?:continue|view|apply)|log\s+in\s+to\s+see\s+more|create\s+an\s+account\s+to\s+view)\b', re.IGNORECASE),
+]
+
+POSTING_POSITIVE_SIGNALS = [
+    re.compile(r'\b(?:responsibilities|duties|what\s+you(?:[\'’]ll|\s+will)\s+do|the\s+role|role\s+overview|job\s+summary|about\s+the\s+role|key\s+responsibilities|day[- ]to[- ]day)\b', re.IGNORECASE),
+    re.compile(r'\b(?:requirements|qualifications|what\s+we(?:[\'’]re|\s+are)\s+looking\s+for|skills\s+required|candidate\s+profile|eligibility|who\s+you\s+are|minimum\s+qualifications|preferred\s+qualifications|basic\s+qualifications)\b', re.IGNORECASE),
+    re.compile(r'\b(?:how\s+to\s+apply|apply\s+now|submit\s+your\s+(?:resume|application)|to\s+apply|compensation|benefits|about\s+us|perks|we\s+offer)\b', re.IGNORECASE),
+]
+
+CARD_ACTION_MARKERS = [
+    "apply on company site",
+    "quick apply",
+    "easily apply",
+    "easy apply",
+    "save job",
+    "view job details",
+]
+
+
+def validate_posting_content(title: str | None, text: str | None, is_snippet: bool = False) -> tuple[bool, str]:
+    """
+    Validate whether the enriched job description or snippet represents a genuine
+    individual job posting rather than a multi-job aggregator, listing page, bot wall,
+    or login screen. Uses a composite multi-signal approach combining positive posting
+    structural markers with negative listing/bot/aggregator markers.
+    """
+    from app.services.job_url_classifier import TITLE_AGGREGATE_COUNT_RE, TITLE_AGGREGATE_PHRASE_RE
+
+    # 1. Title heuristics (universal across all job pages)
+    if title and isinstance(title, str) and title.strip():
+        clean_title = title.strip()
+        if TITLE_AGGREGATE_COUNT_RE.search(clean_title):
+            return False, "title_aggregate_count"
+        if TITLE_AGGREGATE_PHRASE_RE.search(clean_title):
+            return False, "title_aggregate_phrase"
+
+    if not text or not isinstance(text, str) or not text.strip():
+        return False, "empty_content"
+
+    clean_text = text.strip()
+    lower_text = clean_text.lower()
+
+    # 2. Bot / Anti-bot / Login wall detection
+    for pattern in BOT_OR_LOGIN_WALL_PATTERNS:
+        if pattern.search(lower_text):
+            return False, "bot_or_login_wall"
+
+    # 3. Aggregator & pagination markers in content
+    for pattern in CONTENT_AGGREGATE_PATTERNS:
+        if pattern.search(clean_text):
+            return False, "aggregator_marker"
+
+    # 4. Repeated job-card action markers
+    total_actions = 0
+    for marker in CARD_ACTION_MARKERS:
+        cnt = lower_text.count(marker)
+        if cnt >= 3:
+            return False, f"repeated_card_marker:{marker}"
+        total_actions += cnt
+
+    if total_actions >= 3:
+        return False, "repeated_card_marker:multiple_actions"
+
+    # 5. Length and positive structural posting signals
+    if not is_snippet:
+        if len(clean_text) < 150:
+            return False, "insufficient_content"
+        has_positive_signal = (
+            any(p.search(clean_text) for p in POSTING_POSITIVE_SIGNALS)
+            or (title and any(tok in title.lower() for tok in (
+                "engineer", "developer", "manager", "intern", "architect",
+                "analyst", "specialist", "designer", "consultant", "scientist",
+                "lead", "officer", "associate", "trainee", "fresher", "programmer", "administrator"
+            )))
+        )
+        if not has_positive_signal:
+            return False, "missing_posting_signals"
+
+    return True, "validated_posting"
 
 class EnrichmentWorker:
     """
@@ -251,22 +345,55 @@ class EnrichmentWorker:
     def complete_success(self, db: Session, job_id: int, token: str, new_desc: str, source_execution_id: int | None = None):
         try:
             with db.begin_nested():
+                job = db.query(JobModel).filter(JobModel.id == job_id).first()
+                if not job or not job.description_is_snippet:
+                    return
+
+                # Layer 3: Post-enrichment content validation
+                is_valid, validation_reason = validate_posting_content(job.title, new_desc)
+                if not is_valid:
+                    logger.info("Enriched content rejected as listing job_id=%s reason=%s", job_id, validation_reason)
+                    update_enrichment_q = text("""
+                        UPDATE job_enrichments SET
+                            status = 'unsupported',
+                            error_reason = :error_reason,
+                            result_telemetry = CAST(:telemetry AS jsonb),
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE job_id = :job_id
+                          AND lease_token = :token
+                          AND lease_expires_at > clock_timestamp()
+                        RETURNING job_id;
+                    """)
+                    db.execute(update_enrichment_q, {
+                        "job_id": job_id,
+                        "token": token,
+                        "error_reason": f"rejected_listing_content: {validation_reason}"[:255],
+                        "telemetry": json.dumps({"validation": "rejected_listing", "reason": validation_reason}),
+                    })
+                    db.execute(text("""
+                        DELETE FROM recommendation_history
+                        WHERE job_id = :job_id AND delivery_id IS NULL
+                    """), {"job_id": job.id})
+                    db.commit()
+                    return
+
                 update_enrichment_q = text("""
                     UPDATE job_enrichments SET
                         status = 'success',
                         error_reason = NULL,
+                        result_telemetry = CAST(:telemetry AS jsonb),
                         updated_at = CURRENT_TIMESTAMP
                     WHERE job_id = :job_id
                       AND lease_token = :token
                       AND lease_expires_at > clock_timestamp()
                     RETURNING job_id;
                 """)
-                res = db.execute(update_enrichment_q, {"job_id": job_id, "token": token})
+                res = db.execute(update_enrichment_q, {
+                    "job_id": job_id,
+                    "token": token,
+                    "telemetry": json.dumps({"validation": "validated_posting", "text_length": len(new_desc)}),
+                })
                 if not res.fetchone():
-                    return
-
-                job = db.query(JobModel).filter(JobModel.id == job_id).first()
-                if not job or not job.description_is_snippet:
                     return
 
                 job.description = new_desc
@@ -334,23 +461,57 @@ class EnrichmentWorker:
     def complete_with_snippet(self, db: Session, job_id: int, token: str, reason: str, source_execution_id: int | None = None, unsupported: bool = False):
         try:
             with db.begin_nested():
+                job = db.query(JobModel).filter(JobModel.id == job_id).first()
+                if not job:
+                    return
+
+                # Layer 3: Snippet content validation
+                is_valid, validation_reason = validate_posting_content(job.title, job.description or "", is_snippet=True)
+                if not is_valid:
+                    logger.info("Snippet content rejected as listing job_id=%s reason=%s", job_id, validation_reason)
+                    update_enrichment_q = text("""
+                        UPDATE job_enrichments SET
+                            status = 'unsupported',
+                            error_reason = :reason,
+                            result_telemetry = CAST(:telemetry AS jsonb),
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE job_id = :job_id
+                          AND lease_token = :token
+                          AND lease_expires_at > clock_timestamp()
+                        RETURNING job_id;
+                    """)
+                    db.execute(update_enrichment_q, {
+                        "job_id": job_id,
+                        "token": token,
+                        "reason": f"rejected_listing_content: {validation_reason}"[:255],
+                        "telemetry": json.dumps({"validation": "rejected_listing", "reason": validation_reason}),
+                    })
+                    db.execute(text("""
+                        DELETE FROM recommendation_history
+                        WHERE job_id = :job_id AND delivery_id IS NULL
+                    """), {"job_id": job.id})
+                    db.commit()
+                    return
+
                 # Do not retry if we are evaluating the snippet as a fallback. Mark it unsupported to end the lifecycle.
-                update_enrichment_q = text(f"""
+                update_enrichment_q = text("""
                     UPDATE job_enrichments SET
                         status = 'unsupported',
                         error_reason = :reason,
+                        result_telemetry = CAST(:telemetry AS jsonb),
                         updated_at = CURRENT_TIMESTAMP
                     WHERE job_id = :job_id
                       AND lease_token = :token
                       AND lease_expires_at > clock_timestamp()
                     RETURNING job_id;
                 """)
-                res = db.execute(update_enrichment_q, {"job_id": job_id, "token": token, "reason": reason[:255]})
+                res = db.execute(update_enrichment_q, {
+                    "job_id": job_id,
+                    "token": token,
+                    "reason": reason[:255],
+                    "telemetry": json.dumps({"validation": "snippet_fallback", "reason": reason[:100]}),
+                })
                 if not res.fetchone():
-                    return
-
-                job = db.query(JobModel).filter(JobModel.id == job_id).first()
-                if not job:
                     return
 
                 is_eligible = is_fresher_eligible(
@@ -409,15 +570,17 @@ class EnrichmentWorker:
             logger.error(f"Error completing fallback snippet for job {job_id}: {e}")
             db.rollback()
             self.complete_failure(db, job_id, token, f"Fallback failed: {str(e)[:100]}", unsupported=False)
+
     def complete_failure(self, db: Session, job_id: int, token: str, reason: str, unsupported: bool = False):
         try:
             with db.begin_nested():
                 status = 'unsupported' if unsupported else 'retry'
-                update_q = text(f"""
+                update_q = text("""
                     UPDATE job_enrichments SET
                         status = CASE WHEN attempts + 1 >= :max_attempts AND :status = 'retry' THEN 'failure' ELSE :status END,
                         attempts = attempts + 1,
                         error_reason = :reason,
+                        result_telemetry = CAST(:telemetry AS jsonb),
                         updated_at = CURRENT_TIMESTAMP
                     WHERE job_id = :job_id
                       AND lease_token = :token
@@ -427,6 +590,7 @@ class EnrichmentWorker:
                     "max_attempts": self.max_attempts,
                     "status": status,
                     "reason": reason[:255],
+                    "telemetry": json.dumps({"failure": reason[:100]}),
                     "job_id": job_id,
                     "token": token
                 })

@@ -19,6 +19,7 @@ from app.providers.exceptions import (
 )
 from app.schemas.job_search import JobSearchQuery
 from app.services.firecrawl_quota import calculate_search_credits
+from app.services.job_url_classifier import classify_job_url
 from app.services.scraper.firecrawl import FirecrawlClient, FirecrawlError, FirecrawlPayloadError
 
 logger = logging.getLogger(__name__)
@@ -118,10 +119,39 @@ def _extract_company_from_title(title: str, domain: str | None = None) -> tuple[
     return clean_title, "Unknown"
 
 
+def formulate_individual_job_query(keywords: str, location: str | None = None) -> str:
+    """
+    Formulate a search query targeted at individual job vacancies and postings
+    rather than high-level aggregator or listing directory pages.
+    """
+    kw = (keywords or "").strip()
+    loc = (location or "").strip()
+    if not kw and not loc:
+        return ""
+
+    parts = []
+    if kw:
+        parts.append(kw)
+    if loc:
+        parts.append(loc)
+
+    lower = f"{kw} {loc}".lower()
+    if not any(token in lower for token in ("apply", "opening", "vacancy", "vacancies", "job opening")):
+        parts.append('"apply"')
+
+    return " ".join(parts).strip()
+
+
 class FirecrawlProvider(JobProvider):
     def __init__(self, client: FirecrawlClient | None = None):
         self.api_key = settings.firecrawl_api_key
         self.client = client or FirecrawlClient(self.api_key or "")
+        self.last_search_telemetry: dict = {
+            "candidates_found": 0,
+            "candidates_accepted": 0,
+            "candidates_rejected": 0,
+            "rejections_by_reason": {},
+        }
 
     def validate_config(self):
         if not getattr(settings, "firecrawl_enabled", True):
@@ -133,18 +163,29 @@ class FirecrawlProvider(JobProvider):
     def search_jobs(self, query: JobSearchQuery) -> List[Job]:
         keywords = (query.keywords or "").strip()
         location = (query.location or "").strip()
-        if keywords and location:
-            search_query_str = f"{keywords} {location}"
-        else:
-            search_query_str = keywords or location
+        search_query_str = formulate_individual_job_query(keywords, location)
 
         if not search_query_str:
+            self.last_search_telemetry = {
+                "candidates_found": 0,
+                "candidates_accepted": 0,
+                "candidates_rejected": 0,
+                "rejections_by_reason": {},
+            }
             return []
 
         limit = getattr(query, "page_size", 10) or 10
+        freshness = getattr(settings, "firecrawl_discovery_freshness", "qdr:m")
+        country = getattr(settings, "firecrawl_discovery_country", "in")
 
         try:
-            raw_results = self.client.search(query=search_query_str, limit=limit)
+            raw_results = self.client.search(
+                query=search_query_str,
+                limit=limit,
+                tbs=freshness,
+                country=country,
+                location=location or None,
+            )
         except FirecrawlPayloadError as e:
             logger.error(f"Firecrawl payload error: {e}")
             raise ProviderPayloadError(f"Firecrawl payload error: {e}") from e
@@ -167,15 +208,22 @@ class FirecrawlProvider(JobProvider):
 
         jobs: List[Job] = []
         now_utc = datetime.now(timezone.utc)
+        rejections: dict[str, int] = {}
+        candidates_found = len(raw_results)
+        candidates_rejected = 0
 
         for item in raw_results:
             if not isinstance(item, dict):
                 logger.warning("FirecrawlProviderSchemaError: result item is not a dictionary")
+                candidates_rejected += 1
+                rejections["invalid_schema"] = rejections.get("invalid_schema", 0) + 1
                 continue
 
             raw_url = item.get("url")
             if not raw_url or not isinstance(raw_url, str) or not raw_url.strip():
                 logger.warning("Firecrawl result missing URL, skipping")
+                candidates_rejected += 1
+                rejections["missing_url"] = rejections.get("missing_url", 0) + 1
                 continue
 
             raw_url = raw_url.strip()
@@ -185,6 +233,16 @@ class FirecrawlProvider(JobProvider):
             raw_title = item.get("title")
             if not raw_title or not isinstance(raw_title, str) or not raw_title.strip():
                 logger.warning("Firecrawl result missing title, skipping")
+                candidates_rejected += 1
+                rejections["missing_title"] = rejections.get("missing_title", 0) + 1
+                continue
+
+            # Layer 2: Filter non-individual job postings (search/category/aggregators)
+            is_valid, reject_reason = classify_job_url(raw_url, raw_title)
+            if not is_valid:
+                logger.info("Firecrawl search dropped non-individual URL: %s (reason: %s)", raw_url, reject_reason)
+                candidates_rejected += 1
+                rejections[reject_reason] = rejections.get(reject_reason, 0) + 1
                 continue
 
             clean_title, company = _extract_company_from_title(raw_title, domain)
@@ -202,6 +260,18 @@ class FirecrawlProvider(JobProvider):
             if snippet and isinstance(snippet, str):
                 snippet = snippet.strip() or None
 
+            # Finding 7: Parse publication timestamp if available
+            published_at = None
+            raw_date = item.get("published_at") or item.get("date") or item.get("publishedDate") or item.get("published_time")
+            if raw_date and isinstance(raw_date, str) and raw_date.strip():
+                try:
+                    dt = datetime.fromisoformat(raw_date.strip().replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    published_at = dt
+                except Exception:
+                    published_at = None
+
             job_location = location or None
 
             try:
@@ -216,9 +286,19 @@ class FirecrawlProvider(JobProvider):
                     description=snippet,
                     description_is_snippet=True,
                     url=raw_url,
+                    published_at=published_at,
                 )
                 jobs.append(job)
             except Exception as e:
                 logger.warning(f"Firecrawl validation error for job {source_job_id}: {e}")
+                candidates_rejected += 1
+                rejections["validation_error"] = rejections.get("validation_error", 0) + 1
+
+        self.last_search_telemetry = {
+            "candidates_found": candidates_found,
+            "candidates_accepted": len(jobs),
+            "candidates_rejected": candidates_rejected,
+            "rejections_by_reason": rejections,
+        }
 
         return jobs

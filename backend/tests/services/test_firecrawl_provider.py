@@ -9,7 +9,7 @@ from app.models.job import Job
 from app.providers.types import ProviderName
 from app.providers.registry import PROVIDER_PRIORITY, create_provider, is_provider_enabled
 from app.providers.base import JobProvider
-from app.providers.firecrawl import FirecrawlProvider, calculate_search_credits
+from app.providers.firecrawl import FirecrawlProvider, calculate_search_credits, formulate_individual_job_query
 from app.providers.exceptions import (
     ProviderConfigurationError,
     ProviderHTTPError,
@@ -633,3 +633,37 @@ def test_canonical_deduplication_unknown_company_safe():
         assert saved3.id != saved1.id
     finally:
         db.close()
+
+
+def test_formulate_individual_job_query():
+    # When no explicit vacancy markers are present, '"apply"' is appended
+    assert formulate_individual_job_query("Python Developer", "Bengaluru") == 'Python Developer Bengaluru "apply"'
+    assert formulate_individual_job_query("Software Engineer") == 'Software Engineer "apply"'
+
+    # When explicit markers are present, no extra token is appended
+    assert formulate_individual_job_query("Python Developer apply", "Bengaluru") == "Python Developer apply Bengaluru"
+    assert formulate_individual_job_query("Backend Engineer job opening", "Remote") == "Backend Engineer job opening Remote"
+    assert formulate_individual_job_query("Frontend Engineer vacancy", "Pune") == "Frontend Engineer vacancy Pune"
+    assert formulate_individual_job_query("Data Scientist vacancies", "Hyderabad") == "Data Scientist vacancies Hyderabad"
+
+    # Empty inputs
+    assert formulate_individual_job_query("", "") == ""
+    assert formulate_individual_job_query("   ") == ""
+
+
+@respx.mock
+def test_firecrawl_provider_search_query_formulation():
+    import json
+    mock_resp = {"success": True, "data": []}
+    route = respx.post("https://api.firecrawl.dev/v2/search").mock(return_value=httpx.Response(200, json=mock_resp))
+
+    provider = FirecrawlProvider()
+    query = JobSearchQuery(keywords="Python Developer", location="Bengaluru", page=1, page_size=10)
+    provider.search_jobs(query)
+
+    assert route.called
+    sent_payload = json.loads(route.calls.last.request.content)
+    assert sent_payload["query"] == 'Python Developer Bengaluru "apply"'
+    assert sent_payload["limit"] == 10
+    assert sent_payload["location"] == "Bengaluru"
+    assert sent_payload["country"] == "in"

@@ -205,3 +205,28 @@ def test_firecrawl_client_search_success_false():
 
     with pytest.raises(FirecrawlPayloadError, match="Firecrawl search failed"):
         client.search("test")
+
+
+@respx.mock
+def test_firecrawl_client_search_with_freshness_country_and_location():
+    import json
+    client = FirecrawlClient("test-key")
+    route = respx.post("https://api.firecrawl.dev/v2/search").mock(
+        return_value=httpx.Response(200, json={"success": True, "data": []})
+    )
+
+    client.search(
+        query="Python Developer",
+        limit=10,
+        tbs="qdr:m",
+        country="in",
+        location="Bengaluru",
+    )
+
+    assert route.called
+    sent_payload = json.loads(route.calls.last.request.content)
+    assert sent_payload["query"] == "Python Developer"
+    assert sent_payload["limit"] == 10
+    assert sent_payload["tbs"] == "qdr:m"
+    assert sent_payload["country"] == "in"
+    assert sent_payload["location"] == "Bengaluru"

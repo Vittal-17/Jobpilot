@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     firecrawl_discovery_max_results_per_query: int = 10
     firecrawl_discovery_max_credits_per_run: int = 20
     firecrawl_enrichment_max_credits_per_run: int = 10
+    firecrawl_discovery_freshness: str = "qdr:m"
+    firecrawl_discovery_country: str = "in"
 
     @field_validator('api_secret_key')
     @classmethod

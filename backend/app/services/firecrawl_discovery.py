@@ -1,11 +1,17 @@
+import hashlib
+import json
 import logging
+import uuid
+from datetime import datetime, timezone
 from typing import Any
 from pydantic import BaseModel, Field
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.models.user_search import UserSearch
 from app.db.models.user_profile import UserProfile
+from app.db.models.search_execution import SearchExecutionModel
 from app.domain.taxonomy import get_authoritative_taxonomy
 from app.providers.registry import create_provider
 from app.providers.types import ProviderName
@@ -47,6 +53,7 @@ class FirecrawlDiscoveryPlan(BaseModel):
 
 
 class FirecrawlDiscoveryTelemetry(BaseModel):
+    run_id: str | None = None
     status: str  # "completed", "quota_stopped", "disabled", "failed"
     query_count: int = 0
     attempted_queries: int = 0
@@ -54,11 +61,14 @@ class FirecrawlDiscoveryTelemetry(BaseModel):
     candidates_found: int = 0
     candidates_accepted: int = 0
     candidates_rejected: int = 0
+    validated_individual: int = 0
+    rejections_by_reason: dict[str, int] = Field(default_factory=dict)
     ingestion: IngestionStats = Field(default_factory=IngestionStats)
     credits_consumed: int = 0  # Authoritative credits reserved in provider_usage
     credits_reserved: int = 0  # Explicit alias for internal quota reservation
     estimated_credits: int = 0  # Authoritative planned credit cost
     reason: str | None = None
+    execution_ids: list[int] = Field(default_factory=list)
 
 
 def _format_discovery_keywords(raw_role: str) -> str:
@@ -165,10 +175,14 @@ def execute_discovery_run(
     db: Session,
     plan: FirecrawlDiscoveryPlan | None = None,
     force: bool = False,
+    run_id: str | None = None,
 ) -> FirecrawlDiscoveryTelemetry:
     max_queries = getattr(settings, "firecrawl_discovery_max_queries_per_run", 2)
     max_results = getattr(settings, "firecrawl_discovery_max_results_per_query", 10)
     max_credits = getattr(settings, "firecrawl_discovery_max_credits_per_run", 20)
+
+    if run_id is None:
+        run_id = f"fc_run_{uuid.uuid4().hex[:16]}"
 
     if plan is None:
         plan = plan_discovery_queries(db, force=force)
@@ -177,6 +191,7 @@ def execute_discovery_run(
     is_enabled = bool(getattr(settings, "firecrawl_discovery_enabled", False)) or force
     if not is_enabled:
         return FirecrawlDiscoveryTelemetry(
+            run_id=run_id,
             status="disabled",
             query_count=0,
             attempted_queries=0,
@@ -193,6 +208,7 @@ def execute_discovery_run(
 
     if not plan.queries:
         return FirecrawlDiscoveryTelemetry(
+            run_id=run_id,
             status="completed",
             query_count=0,
             attempted_queries=0,
@@ -232,6 +248,7 @@ def execute_discovery_run(
         total_estimated_credits += cost_units
 
     telemetry = FirecrawlDiscoveryTelemetry(
+        run_id=run_id,
         status="completed",
         query_count=len(validated_queries),
         attempted_queries=0,
@@ -276,8 +293,24 @@ def execute_discovery_run(
             page_size=norm_page_size,
         )
 
+        now_dt = datetime.now(timezone.utc)
+        query_hash = hashlib.sha256(f"{q.keywords}::{q.location}".encode("utf-8")).hexdigest()[:8]
+        candidate_id = f"fc_disc_{run_id}_{telemetry.attempted_queries}_{query_hash}"
+        execution = SearchExecutionModel(
+            candidate_id=candidate_id,
+            cycle_id=run_id,
+            status="selected",
+            provider_name="firecrawl",
+            query_variant=q.keywords,
+            retrieval_location=q.location,
+            selected_at=now_dt,
+        )
+        db.add(execution)
+        db.commit()
+
         try:
-            result, job_ids = run_ingestion(db, "firecrawl", provider, query)
+            result, job_ids = run_ingestion(db, "firecrawl", provider, query, execution_id=execution.id)
+            telemetry.execution_ids.append(execution.id)
             # If run_ingestion didn't raise RateLimitExceeded or DatabaseUnavailable,
             # acquire_provider_request_slot() successfully reserved cost_units in provider_usage!
             telemetry.credits_consumed += cost_units
@@ -286,9 +319,39 @@ def execute_discovery_run(
             if result.failed == 0:
                 record_firecrawl_operation(operation="discovery", cost_units=cost_units, status="success")
                 telemetry.successful_queries += 1
-                telemetry.candidates_found += result.fetched
-                telemetry.candidates_accepted += result.created
-                telemetry.candidates_rejected += (result.duplicates + result.invalid)
+                search_telem = getattr(provider, "last_search_telemetry", {})
+                if isinstance(search_telem, dict) and search_telem:
+                    telemetry.candidates_found += search_telem.get("candidates_found", result.fetched)
+                    telemetry.candidates_accepted += result.created
+                    prov_rejected = search_telem.get("candidates_rejected", 0)
+                    telemetry.candidates_rejected += prov_rejected + result.duplicates + result.invalid
+                    telemetry.validated_individual += search_telem.get("candidates_accepted", result.fetched)
+                    rejections_dict = search_telem.get("rejections_by_reason")
+                    if isinstance(rejections_dict, dict):
+                        for r_reason, r_cnt in rejections_dict.items():
+                            telemetry.rejections_by_reason[r_reason] = telemetry.rejections_by_reason.get(r_reason, 0) + r_cnt
+
+                        if rejections_dict:
+                            db.execute(text("""
+                                UPDATE search_execution
+                                SET error_message = :rejection_json
+                                WHERE id = :eid
+                            """), {
+                                "eid": execution.id,
+                                "rejection_json": json.dumps({"rejections_by_reason": rejections_dict})
+                            })
+                            db.commit()
+                else:
+                    telemetry.candidates_found += result.fetched
+                    telemetry.candidates_accepted += result.created
+                    telemetry.candidates_rejected += (result.duplicates + result.invalid)
+                    telemetry.validated_individual += result.fetched
+
+                if result.duplicates > 0:
+                    telemetry.rejections_by_reason["duplicate_in_db"] = telemetry.rejections_by_reason.get("duplicate_in_db", 0) + result.duplicates
+                if result.invalid > 0:
+                    telemetry.rejections_by_reason["invalid_persistence"] = telemetry.rejections_by_reason.get("invalid_persistence", 0) + result.invalid
+
                 telemetry.ingestion.created += result.created
                 telemetry.ingestion.duplicates += result.duplicates
                 telemetry.ingestion.invalid += result.invalid
