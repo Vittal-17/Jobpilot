@@ -8,13 +8,15 @@ def extract_job_description(html_content: str) -> str:
     if not html_content:
         raise ExtractionError("Empty HTML content")
 
+    if len(html_content) > 5_000_000:
+        raise ExtractionError("HTML content exceeds extraction limit")
     soup = BeautifulSoup(html_content, 'html.parser')
 
     # Remove script, style, meta, noscript
     for element in soup(["script", "style", "meta", "noscript", "header", "footer", "nav"]):
         element.decompose()
 
-    text = soup.get_text(separator='\n')
+    text = soup.get_text(separator='\n')[:500_000]
 
     # Clean up whitespace
     lines = (line.strip() for line in text.splitlines())

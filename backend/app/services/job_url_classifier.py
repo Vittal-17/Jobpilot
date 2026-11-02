@@ -2,37 +2,25 @@ import logging
 import re
 import urllib.parse
 from typing import Tuple
+from app.services.content_scanner import title_aggregate_reason
 
 logger = logging.getLogger(__name__)
 
-# Precompiled regexes for title analysis
-TITLE_AGGREGATE_COUNT_RE = re.compile(
-    r'(?:'
-    r'\b\d+[\d,+]*(?:\+)?\s*(?:python|backend|frontend|full\s*stack|software|developer|engineer|fresher|entry\s*level|internship)?\s*(?:jobs?|vacancies|openings|roles)\b'
-    r'|\(\s*\d+[\d,+]*(?:\+)?\s*(?:open\s*roles|jobs?|openings|vacancies)\s*\)'
-    r'|\b(?:apply to\s+)?\d+[\d,+]*(?:\+)?\s+.*?(?:jobs?|openings|vacancies)\b'
-    r')',
-    re.IGNORECASE,
-)
-
-TITLE_AGGREGATE_PHRASE_RE = re.compile(
-    r'(?:'
-    r'\b(?:hiring|find|search|top|browse|all)\s+.*?\s+jobs\s+in\b'
-    r'|^hiring\s+.*?jobs\s+in\b'
-    r'|\bjobs\s+in\s+[\w\s,]+(?:\s*-\s*\d{4})?$'
-    r'|\bjob\s+vacancies\s+in\b'
-    r'|\b\d{4}\s+jobs\b'
-    r')',
-    re.IGNORECASE,
-)
-
 GENERIC_SEARCH_PARAMS = {"q", "query", "kw", "keyword", "keywords", "search", "search_term"}
-AGGREGATE_PATH_SEGMENTS = {"search", "browse", "categories", "category", "tags", "tag", "explore", "find-jobs", "all-jobs"}
+AGGREGATE_PATH_SEGMENTS = {
+    "search", "browse", "categories", "category", "tags", "tag", "explore",
+    "find-jobs", "all-jobs", "articles", "article", "blog", "blogs", "news",
+    "docs", "documentation", "release-notes", "release", "releases", "press",
+    "guides", "guide", "how-to-apply", "about", "about-us", "contact",
+    "privacy", "terms", "faq", "help",
+}
 GENERIC_ROOT_PATHS = {"", "/", "/jobs", "/jobs/", "/careers", "/careers/", "/openings", "/openings/", "/vacancies", "/vacancies/"}
 
 
 def _matches_domain(netloc: str, domain_pattern: str) -> bool:
     """Checks if netloc matches or is a subdomain of domain_pattern."""
+    netloc = netloc.lower().rstrip(".")
+    domain_pattern = domain_pattern.lower().lstrip(".").rstrip(".")
     return netloc == domain_pattern or netloc.endswith("." + domain_pattern)
 
 
@@ -50,6 +38,8 @@ def classify_job_url(raw_url: str, title: str | None = None) -> Tuple[bool, str]
         return False, "missing_url"
 
     clean_url = raw_url.strip()
+    if len(clean_url) > 4096:
+        return False, "url_too_long"
     try:
         parsed = urllib.parse.urlparse(clean_url)
     except Exception:
@@ -58,13 +48,14 @@ def classify_job_url(raw_url: str, title: str | None = None) -> Tuple[bool, str]
     if parsed.scheme not in ("http", "https"):
         return False, "unsupported_scheme"
 
-    netloc = (parsed.netloc or "").lower().strip()
+    try:
+        netloc = (parsed.hostname or "").lower().strip()
+    except ValueError:
+        return False, "invalid_domain"
     if not netloc:
         return False, "invalid_domain"
 
-    # Strip port and 'www.' prefix
-    if ":" in netloc:
-        netloc = netloc.split(":")[0]
+    # Hostname intentionally excludes the port; normalize provider aliases.
     if netloc.startswith("www."):
         netloc = netloc[4:]
 
@@ -75,12 +66,9 @@ def classify_job_url(raw_url: str, title: str | None = None) -> Tuple[bool, str]
     # -------------------------------------------------------------------------
     # 1. Universal Title Checks (applies across all domains)
     # -------------------------------------------------------------------------
-    if title and isinstance(title, str) and title.strip():
-        clean_title = title.strip()
-        if TITLE_AGGREGATE_COUNT_RE.search(clean_title):
-            return False, "title_aggregate_listing"
-        if TITLE_AGGREGATE_PHRASE_RE.search(clean_title):
-            return False, "title_aggregate_listing"
+    aggregate_reason = title_aggregate_reason(title)
+    if aggregate_reason:
+        return False, "title_too_long" if aggregate_reason == "title_too_long" else "title_aggregate_listing"
 
     # -------------------------------------------------------------------------
     # 2. Platform-Specific Path & Query Rules
@@ -126,7 +114,7 @@ def classify_job_url(raw_url: str, title: str | None = None) -> Tuple[bool, str]
         return False, "cutshort_listing"
 
     # Glassdoor: e.g. glassdoor.com, glassdoor.co.in
-    if "glassdoor." in netloc:
+    if _matches_domain(netloc, "glassdoor.com") or _matches_domain(netloc, "glassdoor.co.in"):
         has_job_listing_term = "job-listing" in path_lower or "joblisting" in path_lower
         is_listing = (
             "srch_" in path_lower
@@ -170,7 +158,7 @@ def classify_job_url(raw_url: str, title: str | None = None) -> Tuple[bool, str]
         return False, "wellfound_listing"
 
     # SimplyHired: e.g. simplyhired.com, simplyhired.co.in
-    if "simplyhired." in netloc:
+    if _matches_domain(netloc, "simplyhired.com") or _matches_domain(netloc, "simplyhired.co.in"):
         if path_lower.startswith("/job/"):
             slug = path_lower[5:].strip("/")
             simplyhired_reserved = {"search", "browse", "all", "jobs", "explore"}
@@ -207,7 +195,7 @@ def classify_job_url(raw_url: str, title: str | None = None) -> Tuple[bool, str]
             if job_segment not in ashby_dir_keywords and (re.search(r'[0-9a-fA-F-]{16,}', job_segment) or len(job_segment) >= 12):
                 return True, "individual_posting"
         return False, "ashby_listing"
-    elif "myworkdayjobs.com" in netloc:
+    elif _matches_domain(netloc, "myworkdayjobs.com"):
         if "/job/" in path_lower:
             after_job = path_lower.split("/job/", 1)[1].strip("/")
             leaf = after_job.split("/")[-1] if after_job else ""
@@ -234,6 +222,24 @@ def classify_job_url(raw_url: str, title: str | None = None) -> Tuple[bool, str]
     if any(s in AGGREGATE_PATH_SEGMENTS for s in segments):
         return False, "listing_directory_path"
 
+    posting_indicators = {
+        "job", "jobs", "career", "careers", "position", "positions",
+        "posting", "postings", "vacancy", "vacancies", "opening", "openings",
+    }
+
+    # Explicitly reject non-job pages (articles, blogs, release notes, documentation, guides, how-to-apply)
+    non_job_prefixes = (
+        "article", "articles", "blog", "blogs", "news", "doc", "docs", "documentation",
+        "release-note", "release-notes", "press", "guide", "guides", "how-to-apply",
+        "about", "contact", "privacy", "terms", "faq", "help"
+    )
+
+    for segment in segments:
+        for prefix in non_job_prefixes:
+            if segment == prefix or segment.startswith(prefix + "-") or segment.startswith(prefix + "_"):
+                if not any(p in posting_indicators for p in segments[:-1]):
+                    return False, "non_job_page"
+
     # Check for listing suffixes e.g. 'python-jobs', 'jobs-in-bangalore', '-jobs.html'
     if segments:
         last_seg = segments[-1]
@@ -246,13 +252,6 @@ def classify_job_url(raw_url: str, title: str | None = None) -> Tuple[bool, str]
         ):
             return False, "listing_directory_path"
 
-    # Path structure analysis: single job postings typically reside under /job/, /jobs/, /careers/
-    # followed by an explicit slug or identifier.
-    # Ambiguous paths (e.g. single short segment without job context) fail closed per design decision.
-    posting_indicators = {
-        "job", "jobs", "career", "careers", "position", "positions",
-        "posting", "postings", "vacancy", "vacancies", "opening", "openings",
-    }
     has_posting_context = any(s in posting_indicators for s in segments[:-1])
 
     if has_posting_context:
@@ -265,7 +264,7 @@ def classify_job_url(raw_url: str, title: str | None = None) -> Tuple[bool, str]
     if len(segments) == 1:
         leaf = segments[0]
         # Check if single segment explicitly denotes a specific job posting
-        # e.g. job_123, job-title-123, firecrawl_test_job_1
+        # e.g. job_123, job-title-123, career-dev-101
         is_explicit_job = bool(
             re.search(r'(?:^|[-_])job[-_\d]', leaf)
             or re.search(r'(?:^|[-_])career[-_\d]', leaf)

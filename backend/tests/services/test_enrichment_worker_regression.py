@@ -59,8 +59,9 @@ def test_request_exception_falls_back_to_snippet(engine, monkeypatch):
         token = "test-lease-token"
         enrich = JobEnrichmentModel(
             job_id=job_id,
-            status="pending",
+            status="in_progress",
             url="https://example.com/job",
+            lease_holder="test-worker",
             lease_token=token,
             lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5)
         )
@@ -92,7 +93,14 @@ def test_request_exception_falls_back_to_snippet(engine, monkeypatch):
 
         # 6. Prove idempotency (repeated evaluation does not duplicate recommendation)
         # Reset enrichment state so the job is "re-evaluated" completely
-        db.execute(text("UPDATE job_enrichments SET status = 'pending' WHERE job_id = :job_id"), {"job_id": job_id})
+        db.execute(text("""
+            UPDATE job_enrichments
+            SET status = 'in_progress',
+                lease_holder = 'test-worker',
+                lease_token = :token,
+                lease_expires_at = clock_timestamp() + interval '5 minutes'
+            WHERE job_id = :job_id
+        """), {"job_id": job_id, "token": token})
         db.commit()
 
         worker.process_job(db, job_id, "https://example.com/job", token)
@@ -149,8 +157,9 @@ def test_unexpected_exception_uses_complete_failure(engine, monkeypatch):
         token = "test-lease-token-2"
         enrich = JobEnrichmentModel(
             job_id=job_id,
-            status="pending",
+            status="in_progress",
             url="https://example.com/job2",
+            lease_holder="test-worker",
             lease_token=token,
             lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5)
         )

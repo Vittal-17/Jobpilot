@@ -14,9 +14,9 @@ def _touch_heartbeat():
         logger.error(f"Failed to write heartbeat: {e}")
 
 class HeartbeatingEnrichmentWorker(EnrichmentWorker):
-    def process_job(self, db, job_id, url, token, source_execution_id=None):
+    def process_job(self, db, job_id, url, token, source_execution_id=None, staged_content=None):
         _touch_heartbeat()
-        super().process_job(db, job_id, url, token, source_execution_id)
+        super().process_job(db, job_id, url, token, source_execution_id, staged_content)
         _touch_heartbeat()
 
 def run_enrichment_worker():

@@ -161,9 +161,13 @@ def test_geographic_rejection_taxonomy_aware(db_session, monkeypatch):
 
     monkeypatch.setattr("app.services.ingestion.acquire_provider_request_slot", lambda db, n: True)
     q = JobSearchQuery(keywords="dev", location="Whitefield") # Whitefield is LOC-BLR-002
-    res, _ = run_ingestion(db_session, "test", TestProvider(), q)
-    assert res.invalid == 8 # Las Vegas, Indianapolis, Hyderabad, Pune, Mumbai, Chennai, India, Karnataka
-    assert res.created == 4 # Electronic City, ITPL, Remote, Bengaluru Karnataka India
+    res, job_ids = run_ingestion(db_session, "test", TestProvider(), q)
+    # Related areas and broad metro postings do not prove Whitefield, and
+    # remote postings must carry a matching location under an explicit filter.
+    assert res.fetched == 12
+    assert res.invalid == 12
+    assert res.created == 0
+    assert job_ids == []
 
 def test_recommendation_creation_end_to_end(db_session, monkeypatch):
     from app.api.endpoints.ingestion import internal_execute_search, claim_notifications, NotificationClaimRequest

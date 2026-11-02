@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from sqlalchemy import String, Integer, Boolean, DateTime, Text, CheckConstraint, UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -33,6 +34,10 @@ class JobModel(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    requires_refresh: Mapped[bool] = mapped_column(Boolean, server_default="false", nullable=False)
+    validation_status: Mapped[str | None] = mapped_column(String(32))
+    source_observation: Mapped[dict | None] = mapped_column(JSONB)
+    posting_facts: Mapped[dict | None] = mapped_column(JSONB)
 
     __table_args__ = (
         UniqueConstraint("source", "source_job_id", name="uq_jobs_source_source_job_id"),

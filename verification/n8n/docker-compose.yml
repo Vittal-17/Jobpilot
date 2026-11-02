@@ -1,0 +1,37 @@
+services:
+  stub:
+    image: python:3.13-alpine
+    command: ["python", "/harness/stub_server.py"]
+    environment:
+      STUB_TELEGRAM_MODE: ${STUB_TELEGRAM_MODE:-success}
+    volumes:
+      - ${N8N_HARNESS_DIR:-.}:/harness:ro
+      - ${N8N_LOGS_DIR:-./logs}:/logs
+    networks:
+      default:
+        aliases: [fastapi, telegram]
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:2.38.1
+    environment:
+      DB_TYPE: sqlite
+      DB_SQLITE_DATABASE: /home/node/.n8n/database.sqlite
+      N8N_ENCRYPTION_KEY: offline-harness-key
+      N8N_USER_MANAGEMENT_DISABLED: "true"
+      N8N_SECURE_COOKIE: "false"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
+      N8N_TEMPLATES_ENABLED: "false"
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+      TELEGRAM_BOT_TOKEN: fake-token
+      TELEGRAM_API_BASE_URL: http://telegram:8000
+      TELEGRAM_CHAT_ID: chat-stub
+    volumes:
+      - ${N8N_STATE_DIR:-./state}:/home/node/.n8n
+      - ${N8N_IMPORTS_DIR:-./imports}:/imports:ro
+    networks: [default]
+    depends_on: [stub]
+
+networks:
+  default:
+    internal: true

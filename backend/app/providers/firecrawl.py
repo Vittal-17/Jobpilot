@@ -16,6 +16,7 @@ from app.providers.exceptions import (
     ProviderNetworkError,
     ProviderPayloadError,
     ProviderTimeout,
+    BillingContractUnverified,
 )
 from app.schemas.job_search import JobSearchQuery
 from app.services.firecrawl_quota import calculate_search_credits
@@ -33,10 +34,11 @@ NON_COMPANY_TOKENS = {
     "noida", "gurgaon", "gurugram", "chennai", "kolkata", "ahmedabad", "chandigarh",
     "india", "karnataka", "maharashtra", "telangana", "tamil nadu", "usa", "us", "uk",
     "london", "singapore", "germany", "canada",
-    # Employment types & seniority
+    # Employment types & seniority & experience
     "full time", "full-time", "part time", "part-time", "contract", "contractor",
     "internship", "intern", "interns", "temporary", "freelance", "permanent",
     "fresher", "freshers", "entry level", "junior", "senior", "lead", "principal", "staff",
+    "experience", "exp", "years", "yrs", "year", "yr",
     # Status & calls to action
     "immediate", "urgent", "hiring", "careers", "jobs", "apply", "opening", "openings",
     "opportunity", "opportunities", "walk-in", "walkin",
@@ -67,8 +69,10 @@ def _is_valid_company_name(cand: str) -> bool:
     # Reject salary / compensation indicators (e.g. 100k, 12 LPA, $120k)
     if re.search(r'(?:\$|\b\d+\s*(?:k|lpa|inr|usd)\b)', cand_lower):
         return False
-    # Reject experience requirements (e.g. 0-1 years, 2+ yrs)
-    if re.search(r'\b\d+\s*(?:-\s*\d+)?\s*(?:years?|yrs?)\b', cand_lower):
+    # Reject experience requirements (e.g. 0-1 years, 2+ yrs, 3+ years of experience, 5+ yrs exp)
+    if re.search(r'\b\d+\s*\+?\s*(?:-\s*\d+\s*\+?)?\s*(?:years?|yrs?|yr)\b', cand_lower):
+        return False
+    if re.search(r'\b\d+\s*\+?\s*(?:-\s*\d+\s*\+?)?\s*(?:years?|yrs?|yr)?\s*(?:of\s*)?(?:experience|exp)\b', cand_lower):
         return False
     return True
 
@@ -174,7 +178,14 @@ class FirecrawlProvider(JobProvider):
             }
             return []
 
-        limit = getattr(query, "page_size", 10) or 10
+        raw_limit = getattr(query, "page_size", 10) or 10
+        try:
+            limit_helper = getattr(self.client, "bounded_search_limit", None)
+            limit = limit_helper(raw_limit) if callable(limit_helper) else max(1, min(int(raw_limit), 100))
+            if isinstance(limit, bool) or not isinstance(limit, int):
+                raise ValueError
+        except (TypeError, ValueError) as exc:
+            raise BillingContractUnverified("billing_contract_unverified: invalid search limit") from exc
         freshness = getattr(settings, "firecrawl_discovery_freshness", "qdr:m")
         country = getattr(settings, "firecrawl_discovery_country", "in")
 
@@ -188,23 +199,40 @@ class FirecrawlProvider(JobProvider):
             )
         except FirecrawlPayloadError as e:
             logger.error(f"Firecrawl payload error: {e}")
-            raise ProviderPayloadError(f"Firecrawl payload error: {e}") from e
+            raise ProviderPayloadError(
+                f"Firecrawl payload error: {e}",
+                status_code=e.status_code,
+                response=e,
+            ) from e
         except FirecrawlError as e:
             if e.status_code == 408:
                 logger.error("Firecrawl connection error: Timeout")
-                raise ProviderTimeout("Firecrawl connection error: Timeout") from e
+                raise ProviderTimeout(
+                    "Firecrawl connection error: Timeout",
+                    status_code=e.status_code or 408,
+                    response=e,
+                ) from e
             elif e.status_code is not None and e.status_code >= 400:
                 logger.error(f"Firecrawl HTTP error: {e.status_code}")
-                raise ProviderHTTPError(f"Firecrawl HTTP error: {e.status_code}") from e
+                raise ProviderHTTPError(
+                    f"Firecrawl HTTP error: {e.status_code}",
+                    status_code=e.status_code,
+                    response=e,
+                    billing_ambiguous=e.status_code == 429 or e.status_code >= 500,
+                ) from e
             else:
                 logger.error(f"Firecrawl connection error: {e}")
-                raise ProviderNetworkError(f"Firecrawl connection error: {e}") from e
+                raise ProviderNetworkError(
+                    f"Firecrawl connection error: {e}", response=e
+                ) from e
         except Exception as e:
             logger.error(f"Firecrawl unexpected error: {type(e).__name__}")
             raise ProviderError(f"Firecrawl unexpected error: {e}") from e
 
         if not isinstance(raw_results, list):
-            raise ProviderPayloadError("FirecrawlProviderSchemaError: Search results is not a list")
+            raise ProviderPayloadError(
+                "FirecrawlProviderSchemaError: Search results is not a list"
+            )
 
         jobs: List[Job] = []
         now_utc = datetime.now(timezone.utc)
@@ -272,7 +300,10 @@ class FirecrawlProvider(JobProvider):
                 except Exception:
                     published_at = None
 
-            job_location = location or None
+            raw_job_location = item.get("location") or item.get("job_location") or item.get("jobLocation")
+            job_location = None
+            if raw_job_location and isinstance(raw_job_location, str) and raw_job_location.strip():
+                job_location = raw_job_location.strip()
 
             try:
                 job = Job(

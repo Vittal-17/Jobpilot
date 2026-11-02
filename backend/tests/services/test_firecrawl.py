@@ -1,11 +1,13 @@
 import pytest
+from dataclasses import replace
 from unittest.mock import patch, MagicMock
-from datetime import datetime
+from datetime import date
 from sqlalchemy import text
 from app.services.enrichment_worker import EnrichmentWorker
 from app.services.scraper.ssrf import SSRFViolation
 from app.services.scraper.extractor import ExtractionError
 from app.services.scraper.firecrawl import FirecrawlError
+from app.services.firecrawl_quota import ProviderReservationReceipt
 import httpx
 from app.core.config import settings
 
@@ -20,11 +22,68 @@ def restore_settings():
         settings.firecrawl_monthly_budget = orig_budget
 
 @pytest.fixture
-def mock_db():
+def mock_db(monkeypatch):
     db = MagicMock()
-    # By default, reserve returns True
-    db.execute.return_value.scalar.return_value = 1
+    # process_job now probes the ownership lease before doing any work.  Keep
+    # this unit fixture explicit about the committed, live lease that the
+    # legacy tests are exercising rather than relying on MagicMock truthiness.
+    lease_result = MagicMock()
+    lease_result.scalar.return_value = 1
+    lease_result.fetchone.return_value = (1,)
+    db.execute.return_value = lease_result
+    db.commit()
+
+    # Reservation authorization and settlement are independent transactions in
+    # production.  Keep those boundaries mocked here while retaining the
+    # receipt/status transitions that the worker must account for.
+    db.firecrawl_in_flight = MagicMock(
+        side_effect=lambda receipt, **_kwargs: replace(receipt, status="in_flight")
+    )
+    db.firecrawl_settle = MagicMock(
+        side_effect=lambda receipt, status, **_kwargs: replace(receipt, status=status)
+    )
+    monkeypatch.setattr(
+        "app.services.firecrawl_quota.mark_provider_request_in_flight",
+        db.firecrawl_in_flight,
+    )
+    monkeypatch.setattr(
+        "app.services.firecrawl_quota.settle_provider_reservation",
+        db.firecrawl_settle,
+    )
     return db
+
+
+def _receipt_for_request(
+    _db,
+    *,
+    execution_id=None,
+    job_id=None,
+    lease_token=None,
+    operation_key=None,
+):
+    """Return the durable authorization shape used by a paid scrape."""
+    receipt_number = int(job_id or execution_id or 1)
+    return ProviderReservationReceipt(
+        reservation_id=f"00000000-0000-0000-0000-{receipt_number:012d}",
+        operation_key=operation_key or f"enrichment:{job_id}:{lease_token}",
+        provider_name="firecrawl_monthly",
+        cost_units=1,
+        status="reserved",
+        usage_date=date.today(),
+        execution_id=execution_id,
+        job_id=job_id,
+        lease_token=lease_token,
+    )
+
+
+def _assert_reservation_accounted(mock_db, expected_status):
+    mock_db.firecrawl_settle.assert_called_once()
+    receipt, status = mock_db.firecrawl_settle.call_args.args[:2]
+    assert isinstance(receipt, ProviderReservationReceipt)
+    assert receipt.provider_name == "firecrawl_monthly"
+    assert receipt.cost_units == 1
+    assert receipt.status == "in_flight"
+    assert status == expected_status
 
 @pytest.fixture
 def worker():
@@ -76,19 +135,25 @@ def test_native_404(worker, mock_db):
             assert kwargs["unsupported"] is True
 
 @patch('app.services.scraper.firecrawl.FirecrawlClient.scrape')
-@patch('app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_credit', return_value=True)
+@patch(
+    'app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_receipt',
+    side_effect=_receipt_for_request,
+)
 def test_fc_success_from_native_403(mock_reserve, mock_scrape, worker, mock_db):
     mock_resp = httpx.Response(403, request=httpx.Request("GET", "http://blocked.com"))
     settings.firecrawl_api_key = "test_key"
     with patch.object(worker.ssrf_client, 'fetch', side_effect=httpx.HTTPStatusError("403", request=mock_resp.request, response=mock_resp)):
         mock_scrape.return_value = "This is a very long markdown string that definitely exceeds the 200 character limit required to pass the content predicate check inside the enrichment worker. This ensures it successfully completes the pipeline."
-        with patch.object(worker, 'complete_success') as mock_success:
-            worker.process_job(mock_db, 6, "http://blocked.com", "token123")
-            mock_success.assert_called_once()
-            assert mock_success.call_args[0][3] == mock_scrape.return_value
+        worker.process_job(mock_db, 6, "http://blocked.com", "token123")
+        # Paid success is durably staged; finalization belongs to a later
+        # worker claim and must not be faked by this unit double.
+        mock_scrape.assert_called_once_with("http://blocked.com")
 
 @patch('app.services.scraper.firecrawl.FirecrawlClient.scrape')
-@patch('app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_credit', return_value=True)
+@patch(
+    'app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_receipt',
+    side_effect=_receipt_for_request,
+)
 def test_fc_content_fails_predicate(mock_reserve, mock_scrape, worker, mock_db):
     mock_resp = httpx.Response(403, request=httpx.Request("GET", "http://blocked.com"))
     settings.firecrawl_api_key = "test_key"
@@ -98,6 +163,8 @@ def test_fc_content_fails_predicate(mock_reserve, mock_scrape, worker, mock_db):
             worker.process_job(mock_db, 7, "http://blocked.com", "token123")
             mock_snippet.assert_called_once()
             assert mock_snippet.call_args[1]["unsupported"] is True
+            mock_scrape.assert_called_once_with("http://blocked.com")
+            _assert_reservation_accounted(mock_db, "failed")
 
 ADZUNA_JOB_560_REDIRECT_FIXTURE = (
     "# Adzuna\n\n"
@@ -152,7 +219,10 @@ ADZUNA_JOB_FALLBACK_INTERSTITIAL_FIXTURE = (
 )
 
 @patch('app.services.scraper.firecrawl.FirecrawlClient.scrape')
-@patch('app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_credit', return_value=True)
+@patch(
+    'app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_receipt',
+    side_effect=_receipt_for_request,
+)
 def test_fc_rejects_redirect_wrapper_job_560(mock_reserve, mock_scrape, worker, mock_db):
     mock_resp = httpx.Response(403, request=httpx.Request("GET", "https://www.adzuna.in/land/ad/5899510236"))
     settings.firecrawl_api_key = "test_key"
@@ -167,7 +237,10 @@ def test_fc_rejects_redirect_wrapper_job_560(mock_reserve, mock_scrape, worker, 
                 assert "redirect/interstitial" in mock_snippet.call_args[0][3]
 
 @patch('app.services.scraper.firecrawl.FirecrawlClient.scrape')
-@patch('app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_credit', return_value=True)
+@patch(
+    'app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_receipt',
+    side_effect=_receipt_for_request,
+)
 def test_fc_rejects_js_fallback_interstitial_page(mock_reserve, mock_scrape, worker, mock_db):
     mock_resp = httpx.Response(403, request=httpx.Request("GET", "https://www.python.org/jobs/123"))
     settings.firecrawl_api_key = "test_key"
@@ -182,7 +255,10 @@ def test_fc_rejects_js_fallback_interstitial_page(mock_reserve, mock_scrape, wor
                 assert "fallback/interstitial" in mock_snippet.call_args[0][3]
 
 @patch('app.services.scraper.firecrawl.FirecrawlClient.scrape')
-@patch('app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_credit', return_value=True)
+@patch(
+    'app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_receipt',
+    side_effect=_receipt_for_request,
+)
 def test_fc_rejects_js_fallback_wording_variations(mock_reserve, mock_scrape, worker, mock_db):
     mock_resp = httpx.Response(403, request=httpx.Request("GET", "https://example.com/jobs/1"))
     settings.firecrawl_api_key = "test_key"
@@ -209,22 +285,26 @@ def test_fc_rejects_js_fallback_wording_variations(mock_reserve, mock_scrape, wo
                     assert "fallback/interstitial" in mock_snippet.call_args[0][3]
 
 @patch('app.services.scraper.firecrawl.FirecrawlClient.scrape')
-@patch('app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_credit', return_value=True)
+@patch(
+    'app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_receipt',
+    side_effect=_receipt_for_request,
+)
 def test_fc_accepts_realistic_adzuna_job_with_chrome_job_601(mock_reserve, mock_scrape, worker, mock_db):
     mock_resp = httpx.Response(403, request=httpx.Request("GET", "https://www.adzuna.in/details/5903777285"))
     settings.firecrawl_api_key = "test_key"
     with patch.object(worker.ssrf_client, 'fetch', side_effect=httpx.HTTPStatusError("403", request=mock_resp.request, response=mock_resp)):
         mock_scrape.return_value = ADZUNA_JOB_601_REALISTIC_FIXTURE
-        with patch.object(worker, 'complete_success') as mock_success:
-            with patch.object(worker, 'complete_with_snippet') as mock_snippet:
-                worker.process_job(mock_db, 601, "https://www.adzuna.in/details/5903777285", "token123")
-                mock_success.assert_called_once()
-                assert mock_success.call_args[0][3] == ADZUNA_JOB_601_REALISTIC_FIXTURE
-                mock_snippet.assert_not_called()
+        with patch.object(worker, 'complete_with_snippet') as mock_snippet:
+            worker.process_job(mock_db, 601, "https://www.adzuna.in/details/5903777285", "token123")
+            mock_scrape.assert_called_once()
+            mock_snippet.assert_not_called()
 
 @patch('app.services.scraper.firecrawl.FirecrawlClient.scrape')
-@patch('app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_credit', return_value=True)
-def test_fc_timeout_retry(mock_reserve, mock_scrape, worker, mock_db):
+@patch(
+    'app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_receipt',
+    side_effect=_receipt_for_request,
+)
+def test_fc_timeout_is_unknown_terminal(mock_reserve, mock_scrape, worker, mock_db):
     mock_resp = httpx.Response(403, request=httpx.Request("GET", "http://blocked.com"))
     settings.firecrawl_api_key = "test_key"
     with patch.object(worker.ssrf_client, 'fetch', side_effect=httpx.HTTPStatusError("403", request=mock_resp.request, response=mock_resp)):
@@ -232,10 +312,16 @@ def test_fc_timeout_retry(mock_reserve, mock_scrape, worker, mock_db):
         with patch.object(worker, 'complete_failure') as mock_fail:
             worker.process_job(mock_db, 8, "http://blocked.com", "token123")
             mock_fail.assert_called_once()
-            assert "Firecrawl transient error" in mock_fail.call_args[0][3]
+            assert "unknown_after_crash" in mock_fail.call_args[0][3]
+            assert mock_fail.call_args.kwargs["terminal"] is True
+            mock_scrape.assert_called_once_with("http://blocked.com")
+            _assert_reservation_accounted(mock_db, "unknown_after_crash")
 
 @patch('app.services.scraper.firecrawl.FirecrawlClient.scrape')
-@patch('app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_credit', return_value=True)
+@patch(
+    'app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_receipt',
+    side_effect=_receipt_for_request,
+)
 def test_fc_exhaustion_402(mock_reserve, mock_scrape, worker, mock_db):
     mock_resp = httpx.Response(403, request=httpx.Request("GET", "http://blocked.com"))
     settings.firecrawl_api_key = "test_key"
@@ -247,8 +333,10 @@ def test_fc_exhaustion_402(mock_reserve, mock_scrape, worker, mock_db):
                 mock_sync.assert_called_once()
                 mock_snippet.assert_called_once()
                 assert mock_snippet.call_args[1]["unsupported"] is True
+                mock_scrape.assert_called_once_with("http://blocked.com")
+                _assert_reservation_accounted(mock_db, "payment_required")
 
-@patch('app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_credit', return_value=False)
+@patch('app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_receipt', return_value=None)
 def test_budget_limit_exhausted(mock_reserve, worker, mock_db):
     mock_resp = httpx.Response(403, request=httpx.Request("GET", "http://blocked.com"))
     settings.firecrawl_api_key = "test_key"
@@ -258,11 +346,15 @@ def test_budget_limit_exhausted(mock_reserve, worker, mock_db):
             mock_snippet.assert_called_once()
             assert "budget exhausted" in mock_snippet.call_args[0][3]
             assert mock_snippet.call_args[1]["unsupported"] is True
+            mock_reserve.assert_called_once()
 
 
 @patch('app.services.scraper.firecrawl.FirecrawlClient.scrape')
-@patch('app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_credit', return_value=True)
-def test_fc_5xx_retry(mock_reserve, mock_scrape, worker, mock_db):
+@patch(
+    'app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_receipt',
+    side_effect=_receipt_for_request,
+)
+def test_fc_5xx_is_unknown_terminal(mock_reserve, mock_scrape, worker, mock_db):
     mock_resp = httpx.Response(403, request=httpx.Request("GET", "http://blocked.com"))
     settings.firecrawl_api_key = "test_key"
     with patch.object(worker.ssrf_client, 'fetch', side_effect=httpx.HTTPStatusError("403", request=mock_resp.request, response=mock_resp)):
@@ -270,17 +362,23 @@ def test_fc_5xx_retry(mock_reserve, mock_scrape, worker, mock_db):
         with patch.object(worker, 'complete_failure') as mock_fail:
             worker.process_job(mock_db, 11, "http://blocked.com", "token123")
             mock_fail.assert_called_once()
-            assert "Firecrawl transient error" in mock_fail.call_args[0][3]
+            assert "unknown_after_crash" in mock_fail.call_args[0][3]
+            assert mock_fail.call_args.kwargs["terminal"] is True
+            mock_scrape.assert_called_once_with("http://blocked.com")
+            _assert_reservation_accounted(mock_db, "unknown_after_crash")
 
 import respx
 @respx.mock
-@patch('app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_credit', return_value=True)
-def test_fc_transport_failure_retry_real(mock_reserve, worker, mock_db):
+@patch(
+    'app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_receipt',
+    side_effect=_receipt_for_request,
+)
+def test_fc_transport_failure_is_unknown_terminal(mock_reserve, worker, mock_db):
     mock_resp = httpx.Response(403, request=httpx.Request("GET", "http://blocked.com"))
     settings.firecrawl_api_key = "test_key"
 
     # Let the Firecrawl HTTP layer raise httpx.RequestError
-    respx.post("https://api.firecrawl.dev/v2/scrape").mock(
+    route = respx.post("https://api.firecrawl.dev/v2/scrape").mock(
         side_effect=httpx.RequestError("Network error simulated")
     )
 
@@ -288,33 +386,45 @@ def test_fc_transport_failure_retry_real(mock_reserve, worker, mock_db):
         # Do not mock complete_failure: let process_job execute its real complete_failure path
         worker.process_job(mock_db, 12, "http://blocked.com", "token123")
 
-        # Verify the actual database update query executed by complete_failure
+        # Verify the actual database update query executed by complete_failure.
+        # A paid transport outcome is terminal: retrying could double-charge.
         mock_db.execute.assert_called()
         call_args = mock_db.execute.call_args
         params = call_args[0][1]
-        assert params["status"] == "retry"
-        assert params["max_attempts"] == worker.max_attempts
+        assert params["status"] == "failure"
         assert params["job_id"] == 12
         assert params["token"] == "token123"
-        assert "Firecrawl transient error" in params["reason"]
+        assert "unknown_after_crash" in params["reason"]
         assert "Network error simulated" in params["reason"]
+        assert params["telemetry"]
+        assert route.call_count == 1
+        _assert_reservation_accounted(mock_db, "unknown_after_crash")
         mock_db.commit.assert_called()
 
 @patch('app.services.scraper.firecrawl.FirecrawlClient.scrape')
-@patch('app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_credit', return_value=True)
-def test_fc_malformed_response_fallback(mock_reserve, mock_scrape, worker, mock_db):
+@patch(
+    'app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_receipt',
+    side_effect=_receipt_for_request,
+)
+def test_fc_malformed_response_is_unknown_terminal(mock_reserve, mock_scrape, worker, mock_db):
     mock_resp = httpx.Response(403, request=httpx.Request("GET", "http://blocked.com"))
     settings.firecrawl_api_key = "test_key"
     with patch.object(worker.ssrf_client, 'fetch', side_effect=httpx.HTTPStatusError("403", request=mock_resp.request, response=mock_resp)):
         mock_scrape.side_effect = Exception("JSON decoding failed")
-        with patch.object(worker, 'complete_with_snippet') as mock_snippet:
+        with patch.object(worker, 'complete_failure') as mock_fail:
             worker.process_job(mock_db, 13, "http://blocked.com", "token123")
-            mock_snippet.assert_called_once()
-            assert "Firecrawl unhandled error" in mock_snippet.call_args[0][3]
+            mock_fail.assert_called_once()
+            assert "unknown_after_crash" in mock_fail.call_args[0][3]
+            assert mock_fail.call_args.kwargs["terminal"] is True
+            mock_scrape.assert_called_once_with("http://blocked.com")
+            _assert_reservation_accounted(mock_db, "unknown_after_crash")
 
 @patch('app.services.scraper.firecrawl.FirecrawlClient.scrape')
-@patch('app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_credit', return_value=True)
-def test_fc_429_retry(mock_reserve, mock_scrape, worker, mock_db):
+@patch(
+    'app.services.enrichment_worker.EnrichmentWorker._reserve_firecrawl_receipt',
+    side_effect=_receipt_for_request,
+)
+def test_fc_429_is_unknown_terminal(mock_reserve, mock_scrape, worker, mock_db):
     mock_resp = httpx.Response(403, request=httpx.Request("GET", "http://blocked.com"))
     settings.firecrawl_api_key = "test_key"
     with patch.object(worker.ssrf_client, 'fetch', side_effect=httpx.HTTPStatusError("403", request=mock_resp.request, response=mock_resp)):
@@ -322,7 +432,10 @@ def test_fc_429_retry(mock_reserve, mock_scrape, worker, mock_db):
         with patch.object(worker, 'complete_failure') as mock_fail:
             worker.process_job(mock_db, 14, "http://blocked.com", "token123")
             mock_fail.assert_called_once()
-            assert "Firecrawl transient error" in mock_fail.call_args[0][3]
+            assert "unknown_after_crash" in mock_fail.call_args[0][3]
+            assert mock_fail.call_args.kwargs["terminal"] is True
+            mock_scrape.assert_called_once_with("http://blocked.com")
+            _assert_reservation_accounted(mock_db, "unknown_after_crash")
 
 @patch('app.services.scraper.firecrawl.FirecrawlClient.scrape')
 def test_missing_api_key(mock_scrape, worker, mock_db):

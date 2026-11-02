@@ -187,27 +187,47 @@
       },
       {
         "parameters": {
-          "chatId": "={{ $env.TELEGRAM_CHAT_ID }}",
-          "text": "={{ $('Format Payload').item.json.message }}",
-          "additionalFields": {
-            "parse_mode": "HTML"
+          "method": "POST",
+          "url": "={{ ($env.TELEGRAM_API_BASE_URL || 'https://api.telegram.org').replace(/\\/$/, '') + '/bot' + $env.TELEGRAM_BOT_TOKEN + '/sendMessage' }}",
+          "authentication": "none",
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={{ JSON.stringify({ chat_id: $env.TELEGRAM_CHAT_ID, text: $('Format Payload').item.json.message, parse_mode: 'HTML' }) }}",
+          "options": {
+            "timeout": 30000,
+            "redirect": { "redirect": { "followRedirects": false } },
+            "response": { "response": { "fullResponse": true, "neverError": true, "responseFormat": "text" } }
           }
         },
         "id": "node-telegram",
         "name": "Send Telegram",
-        "type": "n8n-nodes-base.telegram",
-        "typeVersion": 1,
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.1,
         "position": [
           1100,
           200
         ],
-        "credentials": {
-          "telegramApi": {
-            "id": "telegram_bot",
-            "name": "Telegram Bot"
+        "notes": "Requires TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in n8n environment. Full HTTP status + raw JSON are intentional; native telegramApi credentials do not support generic HTTP authentication in pinned n8n 2.38.1. Never retry this external send.",
+        "onError": "continueErrorOutput"
+      },
+      {
+        "parameters": {
+          "conditions": {
+            "options": { "caseSensitive": true, "typeValidation": "strict", "version": 2, "leftValue": "" },
+            "conditions": [{
+              "id": "telegram-http-semantic-success",
+              "leftValue": "={{ (() => { const item = $json || {}; const statusCode = item.statusCode; let body = item.body; try { if (typeof body === 'string') body = JSON.parse(body); } catch (_) { return false; } const messageId = body && body.result && body.result.message_id; return Number.isInteger(statusCode) && statusCode >= 200 && statusCode < 300 && body !== null && typeof body === 'object' && !Array.isArray(body) && body.ok === true && body.result !== null && typeof body.result === 'object' && !Array.isArray(body.result) && ((Number.isSafeInteger(messageId) && messageId > 0) || (typeof messageId === 'string' && /^[1-9][0-9]*$/.test(messageId) && Number.isSafeInteger(Number(messageId)))); })() }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }],
+            "combinator": "and"
           }
         },
-        "onError": "continueErrorOutput"
+        "id": "node-check-telegram-success",
+        "name": "Check Telegram Success",
+        "type": "n8n-nodes-base.if",
+        "typeVersion": 2.2,
+        "position": [1200, 200]
       },
       {
         "parameters": {
@@ -217,7 +237,7 @@
           "nodeCredentialType": "httpHeaderAuth",
           "sendBody": true,
           "specifyBody": "json",
-          "jsonBody": "={ \"user_id\": {{ $('Claim Notifications').item.json.user_id }}, \"delivery_id\": \"{{ $('Claim Notifications').item.json.delivery_id }}\" }"
+          "jsonBody": "={{ (() => { const item = $('Send Telegram').item.json || {}; const statusCode = item.statusCode; let body = item.body ?? item; if (typeof body === 'string') body = JSON.parse(body); const messageId = body && body.result && body.result.message_id; if ((statusCode !== undefined && (!Number.isInteger(statusCode) || statusCode < 200 || statusCode >= 300)) || !body || typeof body !== 'object' || Array.isArray(body) || body.ok !== true || !body.result || typeof body.result !== 'object' || Array.isArray(body.result) || !((Number.isSafeInteger(messageId) && messageId > 0) || (typeof messageId === 'string' && /^[1-9][0-9]*$/.test(messageId) && Number.isSafeInteger(Number(messageId))))) throw new Error('Telegram success response was malformed or not acknowledged'); return JSON.stringify({ user_id: $('Claim Notifications').item.json.user_id, delivery_id: $('Claim Notifications').item.json.delivery_id }); })() }}"
         },
         "id": "node-acknowledge",
         "name": "Acknowledge Delivery",
@@ -252,7 +272,7 @@
       },
       {
         "parameters": {
-          "jsCode": "const item = $input.first().json;\nconst err = item.error || {};\nconst httpCode = String(err.httpCode || err.statusCode || \"\");\nconst msg = String(err.message || item.message || \"\");\nconst isDefinitive = (httpCode === \"400\" || httpCode === \"403\" || msg.includes(\"400\") || msg.includes(\"403\") || msg.includes(\"Bad Request\") || msg.includes(\"Forbidden\") || msg.includes(\"bot was blocked\"));\nif (!isDefinitive) {\n  return [];\n}\nreturn [{ json: { definitive: true, reason: msg || \"Telegram definitive send rejection\" } }];"
+          "jsCode": "const item = $input.first().json || {}; const error = item.error || {}; const code = Number(item.statusCode ?? error.httpCode ?? error.statusCode ?? error.response?.statusCode ?? 0); let api = item.body ?? error.response?.body ?? error.body; try { if (typeof api === 'string') api = JSON.parse(api); } catch (_) { api = null; } const definitive = (code === 400 || code === 403) && api !== null && typeof api === 'object' && !Array.isArray(api) && api.ok === false && api.error_code === code; return [{json:{definitive,reason:definitive ? String(api.description || 'Telegram definitive rejection').slice(0,500) : 'Telegram outcome unknown: malformed response, non-success status or transport interruption'}}];"
         },
         "id": "node-definitive-check",
         "name": "Definitive Failure Check",
@@ -271,7 +291,7 @@
           "nodeCredentialType": "httpHeaderAuth",
           "sendBody": true,
           "specifyBody": "json",
-          "jsonBody": "={ \"user_id\": {{ $('Claim Notifications').item.json.user_id }}, \"delivery_id\": \"{{ $('Claim Notifications').item.json.delivery_id }}\", \"reason\": \"{{ $json.reason || 'Telegram definitive send rejection' }}\", \"definitive\": true }"
+          "jsonBody": "={{ JSON.stringify({ user_id: $('Claim Notifications').item.json.user_id, delivery_id: $('Claim Notifications').item.json.delivery_id, reason: String($json.reason || 'Telegram definitive send rejection').slice(0, 500), definitive: $json.definitive === true }) }}"
         },
         "id": "node-fail-delivery",
         "name": "Fail Delivery",
@@ -376,7 +396,7 @@
         "main": [
           [
             {
-              "node": "Acknowledge Delivery",
+              "node": "Check Telegram Success",
               "type": "main",
               "index": 0
             }
@@ -388,6 +408,12 @@
               "index": 0
             }
           ]
+        ]
+      },
+      "Check Telegram Success": {
+        "main": [
+          [{ "node": "Acknowledge Delivery", "type": "main", "index": 0 }],
+          [{ "node": "Definitive Failure Check", "type": "main", "index": 0 }]
         ]
       },
       "Definitive Failure Check": {

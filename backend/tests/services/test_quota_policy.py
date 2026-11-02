@@ -100,9 +100,11 @@ def test_firecrawl_policy_tight_budget():
     from app.core.config import settings
     orig_cap = settings.firecrawl_monthly_automation_cap
     orig_budget = settings.firecrawl_monthly_budget
+    orig_reserve = settings.firecrawl_reserved_credits
     try:
         settings.firecrawl_monthly_automation_cap = 900
         settings.firecrawl_monthly_budget = 5
+        settings.firecrawl_reserved_credits = 0
 
         policy = get_provider_policy("firecrawl")
         assert policy.provider_ceiling.monthly == 5
@@ -111,3 +113,4 @@ def test_firecrawl_policy_tight_budget():
     finally:
         settings.firecrawl_monthly_automation_cap = orig_cap
         settings.firecrawl_monthly_budget = orig_budget
+        settings.firecrawl_reserved_credits = orig_reserve

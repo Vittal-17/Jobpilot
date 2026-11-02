@@ -84,8 +84,13 @@ def engine():
     alembic_cfg.set_main_option("sqlalchemy.url", TEST_DATABASE_URL)
     alembic_cfg.set_main_option("script_location", script_loc)
 
-    # Drop all tables manually just in case to start clean
-    Base.metadata.drop_all(bind=engine)
+    # Register every model before teardown.  A prior raw DROP of
+    # firecrawl_operations left the same Table object in metadata, so the
+    # subsequent metadata drop could issue a second DROP and fail with
+    # UndefinedTable.  One check-first metadata drop is idempotent and keeps
+    # the fixture's full-schema reset intact.
+    import app.db.models  # noqa: F401
+    Base.metadata.drop_all(bind=engine, checkfirst=True)
     with engine.begin() as conn:
         conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
 
@@ -128,3 +133,22 @@ def reset_fastapi_rate_limiter():
         LOGIN_ATTEMPTS.clear()
     except ImportError:
         pass
+
+@pytest.fixture(autouse=True)
+def cleanup_durable_firecrawl_state():
+    """Keep durable quota/ownership state isolated for direct SessionLocal tests."""
+    yield
+    from app.db.database import SessionLocal
+    from sqlalchemy import inspect
+    db = SessionLocal()
+    try:
+        inspector = inspect(db.bind)
+        # Operations must be removed before reservations because of the FK.
+        for table in ("firecrawl_operations", "provider_reservations", "firecrawl_budget_state", "firecrawl_discovery_runs", "firecrawl_query_state"):
+            if inspector.has_table(table):
+                db.execute(text(f"DELETE FROM {table}"))
+        if inspector.has_table("provider_usage"):
+            db.execute(text("DELETE FROM provider_usage WHERE provider_name IN ('firecrawl', 'firecrawl_monthly', 'firecrawl_quota_denied')"))
+        db.commit()
+    finally:
+        db.close()

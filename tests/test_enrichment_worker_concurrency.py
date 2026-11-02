@@ -51,6 +51,7 @@ def test_lease_expiry_under_row_lock(engine):
             job_id=job.id,
             status='in_progress',
             url=job.url,
+            lease_holder="test-worker",
             lease_token=token,
             lease_expires_at=expires
         )

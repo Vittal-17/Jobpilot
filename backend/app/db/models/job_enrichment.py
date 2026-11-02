@@ -20,10 +20,12 @@ class JobEnrichmentModel(Base):
 
     error_reason: Mapped[str | None] = mapped_column(Text)
     result_telemetry: Mapped[dict | None] = mapped_column(JSONB)
+    staged_content: Mapped[str | None] = mapped_column(Text)
+    staged_reservation_id: Mapped[str | None] = mapped_column(ForeignKey("provider_reservations.id", ondelete="SET NULL"), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     __table_args__ = (
-        CheckConstraint("status IN ('pending', 'in_progress', 'success', 'failure', 'unsupported', 'retry')", name="chk_job_enrichments_status"),
+        CheckConstraint("status IN ('pending', 'in_progress', 'result_pending', 'success', 'failure', 'unsupported', 'retry')", name="chk_job_enrichments_status"),
     )

@@ -157,3 +157,9 @@ def test_classifier_malformed_and_boundary_cases():
     assert classify_job_url("https://example.com/careers/") == (False, "generic_directory_root")
     # Ambiguous single segment fails closed
     assert classify_job_url("https://example.com/python-developer") == (False, "ambiguous_pattern")
+
+def test_classifier_adversarial_non_job_pages():
+    assert classify_job_url("https://example.com/release-notes-2026")[0] is False
+    assert classify_job_url("https://example.com/articles/how-to-apply-2026")[0] is False
+    assert classify_job_url("https://example.com/blog/hiring-update-2026")[0] is False
+    assert classify_job_url("https://example.com/jobs/dev-101")[0] is True

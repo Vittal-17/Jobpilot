@@ -282,8 +282,9 @@ def test_n8n_workflow_contract():
     workflow = data[0]
     nodes = workflow["nodes"]
 
-    loop_nodes = [n for n in nodes if n["type"] == "n8n-nodes-base.loop"]
+    loop_nodes = [n for n in nodes if n["name"] == "Loop"]
     assert len(loop_nodes) == 1, "Exactly one Loop node required"
+    assert loop_nodes[0]["type"] == "n8n-nodes-base.code"
 
     select_nodes = [n for n in nodes if n["name"] == "Select Next"]
     assert len(select_nodes) == 1, "Exactly one Select Next HTTP node required"
@@ -306,9 +307,9 @@ def test_n8n_workflow_contract():
     assert action_check_conns[0][0]["node"] == "Execute", "Action Check branch 0 must go to Execute"
     assert action_check_conns[1][0]["node"] == "Stop", "Action Check branch 1 must go to Stop"
 
-    # Execute -> Loop
+    # Execute -> Select Next; the Code loop pass-through sits after selection.
     execute_conns = conns["Execute"]["main"]
-    assert execute_conns[0][0]["node"] == "Loop", "Execute must route back to Loop"
+    assert execute_conns[0][0]["node"] == "Select Next", "Execute must route back to Select Next"
 
     # Ensure no provider credentials or names hardcoded in workflow
     json_str = json.dumps(workflow)

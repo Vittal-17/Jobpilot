@@ -14,6 +14,7 @@ class RecommendationHistoryModel(Base):
     delivery_id: Mapped[str | None] = mapped_column(ForeignKey("notification_deliveries.delivery_id", ondelete="SET NULL"), index=True, nullable=True)
     score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     reasons: Mapped[list[dict] | None] = mapped_column(JSON, nullable=True)
+    source_execution_id: Mapped[int | None] = mapped_column(ForeignKey("search_execution.id", ondelete="SET NULL"), index=True)
 
     __table_args__ = (
         UniqueConstraint("user_id", "job_id", name="uq_recommendation_history_user_job"),

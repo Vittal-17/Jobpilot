@@ -8,3 +8,4 @@ __pycache__/
 .deploy_pending.json*
 .mcp.json
 .claude/
+.clinerules

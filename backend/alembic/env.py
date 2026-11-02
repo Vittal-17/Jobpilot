@@ -14,6 +14,7 @@ import app.db.models.provider_state
 import app.db.models.provider_minute_usage
 import app.db.models.search_execution
 import app.db.models.firecrawl_operation
+import app.db.models.execution_outcome
 
 config = context.config
 if not config.get_main_option("sqlalchemy.url"):

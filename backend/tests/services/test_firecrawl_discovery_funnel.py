@@ -19,6 +19,10 @@ client = TestClient(app)
 
 @pytest.fixture(autouse=True)
 def clean_funnel_db():
+    orig_key = settings.firecrawl_api_key
+    orig_reserve = settings.firecrawl_reserved_credits
+    settings.firecrawl_api_key = "test_key"
+    settings.firecrawl_reserved_credits = 0
     def _cleanup():
         db = SessionLocal()
         try:
@@ -27,6 +31,12 @@ def clean_funnel_db():
             db.execute(text("DELETE FROM job_enrichments WHERE url LIKE '%startup1.com%' OR url LIKE '%startup2.com%' OR url LIKE '%exec1.com%'"))
             db.execute(text("DELETE FROM jobs WHERE source_job_id LIKE 'fc_funnel_test_%'"))
             db.execute(text("DELETE FROM search_execution WHERE candidate_id LIKE 'fc_disc_test_funnel_%'"))
+            db.execute(text("DELETE FROM firecrawl_operations"))
+            db.execute(text("DELETE FROM provider_reservations"))
+            db.execute(text("DELETE FROM firecrawl_budget_state"))
+            db.execute(text("DELETE FROM firecrawl_discovery_runs"))
+            db.execute(text("DELETE FROM firecrawl_query_state"))
+            db.execute(text("DELETE FROM provider_usage WHERE provider_name IN ('firecrawl', 'firecrawl_monthly')"))
             db.execute(text("DELETE FROM users WHERE email = 'test_funnel_user@example.com'"))
             db.commit()
         except Exception:
@@ -37,6 +47,8 @@ def clean_funnel_db():
     _cleanup()
     yield
     _cleanup()
+    settings.firecrawl_api_key = orig_key
+    settings.firecrawl_reserved_credits = orig_reserve
 
 
 def test_funnel_endpoint_requires_auth():

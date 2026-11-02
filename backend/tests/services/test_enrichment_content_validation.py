@@ -125,6 +125,34 @@ def test_validate_posting_content_heuristics():
     assert reason == "validated_posting"
 
 
+def test_h18_linear_regression_scaling():
+    """
+    H18 regression test verifying that content validation execution time scales
+    linearly across 1KiB, 2KiB, 4KiB, 8KiB, and 16KiB input sizes without
+    catastrophic regex backtracking explosions.
+    """
+    import time
+    timings = {}
+    for size in [1024, 2048, 4096, 8192, 16384]:
+        # Crafted numeric/repeated pattern
+        payload = (
+            "We are hiring 100 Python Developers in Bengaluru with skills in FastAPI and PostgreSQL. "
+            "Responsibilities: Build APIs. Requirements: 0-1 years. Apply now. " * (size // 150)
+        )[:size]
+        t0 = time.perf_counter()
+        is_valid, reason = validate_posting_content("Software Engineer", payload)
+        t1 = time.perf_counter()
+        elapsed_ms = (t1 - t0) * 1000.0
+        timings[size] = elapsed_ms
+        assert is_valid is True
+        assert reason == "validated_posting"
+
+    # Verify scaling between 1KiB and 16KiB is strictly bounded (sub-quadratic)
+    ratio_16k_to_1k = timings[16384] / max(timings[1024], 0.001)
+    # A 16x size increase in O(n) should take roughly 16x time (allow up to 64x for noise/JIT, vs 2^16 for O(2^n))
+    assert ratio_16k_to_1k < 64.0, f"Catastrophic scaling detected: 16k/1k ratio = {ratio_16k_to_1k}"
+
+
 def test_enrichment_worker_rejects_listing_content():
     db = SessionLocal()
     try:
@@ -166,6 +194,7 @@ def test_enrichment_worker_rejects_listing_content():
             job_id=job.id,
             status="in_progress",
             url=job.url,
+            lease_holder="test-worker",
             lease_token="val-token-123",
             lease_expires_at=datetime(2099, 1, 1, tzinfo=timezone.utc),
         )
@@ -247,6 +276,7 @@ def test_enrichment_worker_accepts_valid_posting():
             job_id=job.id,
             status="in_progress",
             url=job.url,
+            lease_holder="test-worker",
             lease_token="val-token-456",
             lease_expires_at=datetime(2099, 1, 1, tzinfo=timezone.utc),
         )
@@ -337,6 +367,7 @@ def test_snippet_fallback_follows_same_validation_guard():
             job_id=job_listing.id,
             status="in_progress",
             url=job_listing.url,
+            lease_holder="test-worker",
             lease_token="snip-token-1",
             lease_expires_at=datetime(2099, 1, 1, tzinfo=timezone.utc),
         )
@@ -373,6 +404,7 @@ def test_snippet_fallback_follows_same_validation_guard():
             job_id=job_valid.id,
             status="in_progress",
             url=job_valid.url,
+            lease_holder="test-worker",
             lease_token="snip-token-2",
             lease_expires_at=datetime(2099, 1, 1, tzinfo=timezone.utc),
         )
@@ -437,6 +469,7 @@ def test_listing_content_cannot_reach_eligibility_recs_notifications():
             job_id=job.id,
             status="in_progress",
             url=job.url,
+            lease_holder="test-worker",
             lease_token="norec-token",
             lease_expires_at=datetime(2099, 1, 1, tzinfo=timezone.utc),
         )

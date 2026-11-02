@@ -159,6 +159,185 @@ def test_url_normalization_ref_preservation():
 
     assert normalize_url(url3) == normalize_url(url4)
 
+
+def test_url_normalization_src_and_trk_tracking_parameters(db_session: Session):
+    """Verify _src and trk tracking parameters are removed from URL identity while identity-bearing params (ref) remain preserved, and deduplicate through save_job."""
+    # 1. Normalization check: _src and trk removed, ref preserved
+    base_url = "https://example.com/careers/job/999?ref=engineering&_src=newsletter&trk=linkedin_share"
+    clean_url = "https://example.com/careers/job/999?ref=engineering"
+
+    norm_base = normalize_url(base_url)
+    norm_clean = normalize_url(clean_url)
+
+    assert norm_base == norm_clean
+    assert "_src" not in norm_base
+    assert "trk" not in norm_base
+    assert "ref=engineering" in norm_base
+
+    # 2. Persistence check: Equivalent tracking variants deduplicate through save_job
+    now = datetime.now(timezone.utc)
+    job1 = PydanticJob(
+        title="Staff Engineer",
+        company="Acme Corp",
+        source="adzuna",
+        source_job_id="trk_1",
+        discovered_at=now,
+        url="https://example.com/careers/job/999?ref=engineering&_src=email"
+    )
+    job2 = PydanticJob(
+        title="Staff Engineer",
+        company="Acme Corp",
+        source="jooble",
+        source_job_id="trk_2",
+        discovered_at=now,
+        url="https://example.com/careers/job/999?ref=engineering&trk=social_feed"
+    )
+
+    db_job1, c1 = save_job(db_session, job1)
+    db_job2, c2 = save_job(db_session, job2)
+
+    assert c1 is True
+    assert c2 is False
+    assert db_job1.id == db_job2.id
+
+    # 3. Differing identity-bearing param (ref) must not deduplicate
+    job3 = PydanticJob(
+        title="Staff Engineer",
+        company="Acme Corp",
+        source="firecrawl",
+        source_job_id="trk_3",
+        discovered_at=now,
+        url="https://example.com/careers/job/999?ref=sales&trk=social_feed"
+    )
+
+    db_job3, c3 = save_job(db_session, job3)
+    assert c3 is True
+    assert db_job3.id != db_job1.id
+
+
+def test_h10_generic_landing_urls_do_not_deduplicate_unrelated_jobs(db_session: Session):
+    """H10: Generic career/search/landing URLs must not cause false-positive job merging."""
+    now = datetime.now(timezone.utc)
+    generic_url = "https://example.com/careers"
+
+    job1 = PydanticJob(
+        title="Software Engineer",
+        company="Alpha Corp",
+        location="Remote",
+        source="adzuna",
+        source_job_id="gen_1",
+        discovered_at=now,
+        url=generic_url
+    )
+    job2 = PydanticJob(
+        title="Data Analyst",
+        company="Beta Corp",
+        location="New York, NY",
+        source="jooble",
+        source_job_id="gen_2",
+        discovered_at=now,
+        url=generic_url
+    )
+
+    db_job1, c1 = save_job(db_session, job1)
+    db_job2, c2 = save_job(db_session, job2)
+
+    assert c1 is True
+    assert c2 is True
+    assert db_job1.id != db_job2.id
+
+
+def test_h10_unknown_company_jobs_with_different_urls_remain_separate(db_session: Session):
+    """H10: Jobs with unknown/placeholder company and distinct URLs remain separate."""
+    now = datetime.now(timezone.utc)
+    job1 = PydanticJob(
+        title="Python Developer",
+        company="Unknown",
+        location="Remote",
+        source="adzuna",
+        source_job_id="unk_1",
+        discovered_at=now,
+        url="https://company.com/jobs/dev-101"
+    )
+    job2 = PydanticJob(
+        title="Python Developer",
+        company="Confidential",
+        location="Remote",
+        source="jooble",
+        source_job_id="unk_2",
+        discovered_at=now,
+        url="https://company.com/jobs/dev-102"
+    )
+
+    db_job1, c1 = save_job(db_session, job1)
+    db_job2, c2 = save_job(db_session, job2)
+
+    assert c1 is True
+    assert c2 is True
+    assert db_job1.id != db_job2.id
+
+
+def test_h11_different_posting_ids_remain_separate_same_host_pattern(db_session: Session):
+    """H11: Postings with different posting IDs remain separate even if URLs share host/path structure."""
+    now = datetime.now(timezone.utc)
+    job1 = PydanticJob(
+        title="DevOps Engineer",
+        company="TechCorp",
+        location="San Francisco, CA",
+        source="adzuna",
+        source_job_id="p_101",
+        discovered_at=now,
+        url="https://jobs.lever.co/techcorp/11111111-1111-1111-1111-111111111111"
+    )
+    job2 = PydanticJob(
+        title="Site Reliability Engineer",
+        company="TechCorp",
+        location="San Francisco, CA",
+        source="jooble",
+        source_job_id="p_102",
+        discovered_at=now,
+        url="https://jobs.lever.co/techcorp/22222222-2222-2222-2222-222222222222"
+    )
+
+    db_job1, c1 = save_job(db_session, job1)
+    db_job2, c2 = save_job(db_session, job2)
+
+    assert c1 is True
+    assert c2 is True
+    assert db_job1.id != db_job2.id
+
+
+def test_h11_tracking_parameters_and_ref_differentiation(db_session: Session):
+    """H11: Known tracking parameters normalize out, but ref identity parameters keep jobs distinct."""
+    now = datetime.now(timezone.utc)
+    # Ref=A vs Ref=B must stay separate when URL identity is evaluated
+    job_ref_a = PydanticJob(
+        title="Frontend Lead Alpha",
+        company="Design Co",
+        location="Austin, TX",
+        source="adzuna",
+        source_job_id="ref_a",
+        discovered_at=now,
+        url="https://designco.com/careers/job/55?ref=A&utm_source=google"
+    )
+    job_ref_b = PydanticJob(
+        title="Frontend Lead Beta",
+        company="Design Co",
+        location="Austin, TX",
+        source="jooble",
+        source_job_id="ref_b",
+        discovered_at=now,
+        url="https://designco.com/careers/job/55?ref=B&utm_source=twitter"
+    )
+
+    db_job_a, c_a = save_job(db_session, job_ref_a)
+    db_job_b, c_b = save_job(db_session, job_ref_b)
+
+    assert c_a is True
+    assert c_b is True
+    assert db_job_a.id != db_job_b.id
+
+
 def test_concurrent_canonical_collision(db_session: Session):
     from sqlalchemy.orm import sessionmaker
     engine = db_session.get_bind()

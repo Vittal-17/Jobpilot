@@ -31,6 +31,10 @@ client = TestClient(app)
 
 def clear_test_db(db):
     db.execute(text("DELETE FROM firecrawl_operations"))
+    db.execute(text("DELETE FROM provider_reservations"))
+    db.execute(text("DELETE FROM firecrawl_budget_state"))
+    db.execute(text("DELETE FROM firecrawl_discovery_runs"))
+    db.execute(text("DELETE FROM firecrawl_query_state"))
     db.execute(text("DELETE FROM provider_usage WHERE provider_name IN ('firecrawl', 'firecrawl_monthly', 'firecrawl_quota_denied')"))
     db.execute(text("DELETE FROM job_enrichments WHERE job_id IN (SELECT id FROM jobs WHERE source = 'test_phase5')"))
     db.execute(text("DELETE FROM jobs WHERE source = 'test_phase5'"))
@@ -213,17 +217,22 @@ def test_enrichment_per_run_cap_enforced():
                 assert mock_scrape.call_count == 10
                 assert worker.credits_used_this_run == 10
 
-        # Verify DB state: first 10 succeeded with Firecrawl, remaining 2 fell back to snippet
-        enrichments = db.execute(text("""
+            # Paid calls commit a result_pending record first; a fresh worker
+            # session performs recovery/finalization without another scrape.
+            enrichments = db.execute(text("""
             SELECT job_id, status, error_reason FROM job_enrichments
             WHERE job_id = ANY(:jids) ORDER BY job_id ASC
         """), {"jids": list(job_ids)}).mappings().all()
 
-        success_count = sum(1 for e in enrichments if e["status"] == "success")
-        unsupported_count = sum(1 for e in enrichments if e["status"] == "unsupported")
+            staged_count = sum(1 for e in enrichments if e["status"] == "result_pending")
+            unsupported_count = sum(1 for e in enrichments if e["status"] == "unsupported")
 
-        assert success_count == 10
-        assert unsupported_count == 2
+            assert staged_count == 10
+            assert unsupported_count == 2
+            with patch("app.services.scraper.firecrawl.FirecrawlClient.scrape") as recovery_scrape:
+                EnrichmentWorker(claim_batch_size=15).claim_and_process(db)
+                recovery_scrape.assert_not_called()
+            assert db.execute(text("SELECT count(*) FROM job_enrichments WHERE status='success' AND job_id=ANY(:jids)"), {"jids": list(job_ids)}).scalar() == 10
 
         for e in enrichments:
             if e["status"] == "unsupported":
@@ -257,6 +266,7 @@ def test_direct_fetch_success_makes_zero_firecrawl_calls():
         enrichment = JobEnrichmentModel(
             job_id=job.id,
             status="in_progress",
+            lease_holder="test-worker",
             lease_token="token_123",
             lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
             url=job.url
@@ -306,6 +316,7 @@ def test_enrichment_firecrawl_failure_and_payment_required_telemetry():
         enr_a = JobEnrichmentModel(
             job_id=job_a.id,
             status="in_progress",
+            lease_holder="test-worker",
             lease_token="token_a",
             lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
             url=job_a.url
@@ -347,6 +358,7 @@ def test_enrichment_firecrawl_failure_and_payment_required_telemetry():
         enr_b = JobEnrichmentModel(
             job_id=job_b.id,
             status="in_progress",
+            lease_holder="test-worker",
             lease_token="token_b",
             lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
             url=job_b.url
@@ -401,13 +413,19 @@ def test_last_operation_deterministic_ordering_with_identical_timestamps():
         """), {"t": fixed_time})
         db.commit()
 
-        state = get_firecrawl_budget_state(db)
+        state = get_firecrawl_budget_state(
+            db,
+            reference_time=datetime(2026, 11, 2, 12, 0, 0, tzinfo=timezone.utc),
+        )
         last_op = state["last_operation"]
         assert last_op is not None
         # op 2 has higher id, so it must win deterministically
         assert last_op["operation"] == "enrichment"
         assert last_op["credits"] == 1
         assert last_op["status"] == "success"
+        assert state["monthly_used"] == 0
+        assert state["discovery_used"] == 0
+        assert state["enrichment_used"] == 0
 
 
 # 7. GET /v1/system/status Additive Firecrawl Telemetry
@@ -730,7 +748,12 @@ def test_consecutive_claim_and_process_batch_cap_isolation():
                 assert worker.credits_used_this_run == 5
                 assert mock_scrape.call_count == 5
 
-                # Batch 2: Resets credits_used_this_run to 0 at execution-unit boundary, processes next 5 jobs
+                # Batch 2 recovers all five staged results without paying.
+                worker.claim_and_process(db)
+                assert worker.credits_used_this_run == 0
+                assert mock_scrape.call_count == 5
+                # Staged recovery is prioritized; pending paid work is
+                # handled by the following bounded batch.
                 worker.claim_and_process(db)
                 assert worker.credits_used_this_run == 5
                 assert mock_scrape.call_count == 10

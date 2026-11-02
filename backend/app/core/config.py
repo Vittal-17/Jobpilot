@@ -59,6 +59,22 @@ class Settings(BaseSettings):
                 raise ValueError("API_SECRET_KEY must not be a known unsafe default in production.")
         return v
 
+    @field_validator('firecrawl_discovery_freshness')
+    @classmethod
+    def validate_firecrawl_freshness(cls, v: str) -> str:
+        v = v.strip()
+        if not v or len(v) > 32 or not v.startswith('qdr:'):
+            raise ValueError("firecrawl_discovery_freshness must be a qdr: value")
+        return v
+
+    @field_validator('firecrawl_discovery_country')
+    @classmethod
+    def validate_firecrawl_country(cls, v: str) -> str:
+        v = v.strip().lower()
+        if len(v) != 2 or not v.isalpha():
+            raise ValueError("firecrawl_discovery_country must be a two-letter country code")
+        return v
+
     model_config = SettingsConfigDict(env_file=_env_path, env_file_encoding="utf-8", extra="ignore")
 
     def get_database_url(self) -> str:
