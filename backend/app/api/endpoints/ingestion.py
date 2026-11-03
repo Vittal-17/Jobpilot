@@ -1,6 +1,8 @@
+import json
 import logging
+import os
 logger = logging.getLogger(__name__)
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Body, Depends, HTTPException, Header
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from app.db.database import get_db
@@ -12,6 +14,7 @@ from app.services.ingestion import (
     DatabaseUnavailable,
     InvalidExecutionTransition,
     RateLimitExceeded,
+    PaymentRequired,
 )
 from app.services.provider_router import (
     ProviderNotConfigured,
@@ -80,8 +83,13 @@ def ingest_jooble(query: JobSearchQuery, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.post("/firecrawl", response_model=IngestionResult, dependencies=[Depends(verify_api_key)])
-def ingest_firecrawl(query: JobSearchQuery, db: Session = Depends(get_db)):
+def ingest_firecrawl(
+    query: JobSearchQuery,
+    db: Session = Depends(get_db),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
     from app.providers.exceptions import ProviderConfigurationError
+    from app.services.firecrawl_result_staging import FirecrawlOperationConflict
     try:
         provider = create_provider(ProviderName.FIRECRAWL)
     except HTTPException:
@@ -93,12 +101,22 @@ def ingest_firecrawl(query: JobSearchQuery, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail="Internal server error")
 
     try:
-        result, job_ids = run_ingestion(db, "firecrawl", provider, query)
+        result, job_ids = run_ingestion(
+            db,
+            "firecrawl",
+            provider,
+            query,
+            operation_key=idempotency_key,
+        )
         if result.failed > 0:
             raise HTTPException(status_code=502, detail="Firecrawl provider failed")
         return result
     except HTTPException:
         raise
+    except PaymentRequired:
+        raise HTTPException(status_code=402, detail="Firecrawl payment required")
+    except FirecrawlOperationConflict:
+        raise HTTPException(status_code=409, detail="Idempotency-Key is bound to different request inputs")
     except RateLimitExceeded:
         raise HTTPException(status_code=429, detail="Provider request quota exceeded")
     except DatabaseUnavailable:
@@ -216,84 +234,13 @@ def internal_execute_search(intent: CanonicalSearchIntent, db: Session = Depends
             recommendations_created = 0
 
             try:
-                if job_ids:
-                    from app.db.models.user_search import UserSearch
-                    from app.db.models.user_profile import UserProfile
-                    from app.schemas.match import RecommendationPreferences
-                    from app.services.matching_service import calculate_match
-                    from app.schemas.job import JobResponse
-                    from app.db.models.job import JobModel
-                    from sqlalchemy.dialects.postgresql import insert
-                    from app.db.models.recommendation_history import RecommendationHistoryModel
-                    from app.services.eligibility import is_fresher_eligible
-
-                    jobs = db.query(JobModel).filter(JobModel.id.in_(job_ids)).all()
-
-                    # Calculate fresher eligible count uniquely for THIS execution
-                    for job in jobs:
-                        if job.description_is_snippet:
-                            continue
-                        if is_fresher_eligible(job.title, job.description or "", is_snippet=False):
-                            jobs_fresher_eligible += 1
-
-                    active_user_ids = db.query(UserSearch.user_id).filter(UserSearch.enabled == True).distinct().all()
-                    active_user_ids = [r[0] for r in active_user_ids]
-
-                    if active_user_ids and jobs:
-                        for uid in active_user_ids:
-                            u_profile = db.query(UserProfile).filter(UserProfile.user_id == uid).first()
-                            prefs = RecommendationPreferences(
-                                preferred_roles=u_profile.preferred_roles if u_profile else None,
-                                skills=u_profile.skills if u_profile else None,
-                                preferred_locations=u_profile.preferred_locations if u_profile else None,
-                                remote_preference=u_profile.remote_preference if u_profile else None,
-                                experience_years=u_profile.experience_years if u_profile else None
-                            )
-
-                            # Filter out jobs already recommended to this user
-                            existing_recs = db.query(RecommendationHistoryModel.job_id).filter(
-                                RecommendationHistoryModel.user_id == uid,
-                                RecommendationHistoryModel.job_id.in_(job_ids)
-                            ).all()
-                            existing_job_ids = {r[0] for r in existing_recs}
-
-                            scored_jobs = []
-                            for job in jobs:
-                                if job.id in existing_job_ids or job.description_is_snippet:
-                                    continue
-                                job_resp = JobResponse.model_validate(job)
-                                if not is_fresher_eligible(job_resp.title, job_resp.description or "", is_snippet=False):
-                                    continue
-
-                                match_res = calculate_match(job_resp, prefs)
-                                if match_res.score >= 50:
-                                    scored_jobs.append((match_res, job.id))
-
-                            # Actually select the best jobs (top 5), not merely a match above a score threshold
-                            scored_jobs.sort(key=lambda x: (-x[0].score, x[1]))
-                            top_jobs = scored_jobs[:5]
-
-                            for match_res, job_id in top_jobs:
-                                stmt = insert(RecommendationHistoryModel).values(
-                                    user_id=uid,
-                                    job_id=job_id,
-                                    score=match_res.score,
-                                    reasons=[r.model_dump() for r in match_res.reasons]
-                                ).on_conflict_do_nothing(
-                                    index_elements=['user_id', 'job_id']
-                                ).returning(RecommendationHistoryModel.id)
-                                res = db.execute(stmt)
-                                if res.scalar() is not None:
-                                    recommendations_created += 1
-
-                # Persist execution quality telemetry atomically with recommendations
-                from sqlalchemy import text
-                db.execute(text("""
-                    UPDATE search_execution
-                    SET jobs_fresher_eligible = COALESCE(jobs_fresher_eligible, 0) + :elig,
-                        recommendations_created = COALESCE(recommendations_created, 0) + :recs
-                    WHERE id = :eid
-                """), {"elig": jobs_fresher_eligible, "recs": recommendations_created, "eid": intent.execution_id})
+                from app.services.execution_outcomes import evaluate_jobs, increment_execution_quality
+                jobs_fresher_eligible, recommendations_created = evaluate_jobs(
+                    db, job_ids, intent.execution_id
+                )
+                increment_execution_quality(
+                    db, intent.execution_id, jobs_fresher_eligible, recommendations_created
+                )
                 db.commit()
             except Exception as e:
                 db.rollback()
@@ -301,6 +248,8 @@ def internal_execute_search(intent: CanonicalSearchIntent, db: Session = Depends
                 raise HTTPException(status_code=500, detail="Failed to process recommendations and telemetry")
 
         return result
+    except PaymentRequired:
+        raise HTTPException(status_code=402, detail="Provider payment required")
     except RateLimitExceeded:
         raise HTTPException(status_code=429, detail="Provider request quota exceeded")
     except DatabaseUnavailable:
@@ -314,7 +263,7 @@ def internal_execute_search(intent: CanonicalSearchIntent, db: Session = Depends
     except Exception as e:
         logger.exception("Ingestion endpoint unhandled error"); raise HTTPException(status_code=500, detail="Internal server error")
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 class CycleContext(BaseModel):
     cycle_id: str | None = Field(None, max_length=64, min_length=1, pattern=r"^\S(.*\S)?$")
@@ -471,45 +420,96 @@ from app.services.firecrawl_discovery import (
     FirecrawlDiscoveryTelemetry,
     plan_discovery_queries,
     execute_discovery_run,
+    DiscoveryPlanConflict,
 )
 
 class FirecrawlDiscoveryRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     plan: FirecrawlDiscoveryPlan | None = None
+    force: bool = False
+    run_id: str | None = Field(None, max_length=64, min_length=1, pattern=r"^\S(.*\S)?$")
+
+
+class FirecrawlDiscoveryPlanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    run_id: str | None = Field(None, max_length=64, min_length=1, pattern=r"^\S(.*\S)?$")
     force: bool = False
 
 @router.post("/internal/firecrawl-discovery/plan", response_model=FirecrawlDiscoveryPlan, dependencies=[Depends(verify_api_key)])
-def internal_plan_firecrawl_discovery(force: bool = False, db: Session = Depends(get_db)):
+def internal_plan_firecrawl_discovery(
+    request: FirecrawlDiscoveryPlanRequest | None = Body(default=None),
+    force: bool = False,
+    run_id: str | None = None,
+    db: Session = Depends(get_db),
+):
     try:
-        return plan_discovery_queries(db, force=force)
+        body_run_id = request.run_id if request is not None else None
+        body_force = request.force if request is not None else force
+        return plan_discovery_queries(db, force=body_force, run_id=body_run_id or run_id)
+    except DiscoveryPlanConflict:
+        raise HTTPException(status_code=409, detail="Discovery plan conflict")
     except Exception:
         logger.exception("Failed to generate Firecrawl discovery plan")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.post("/internal/firecrawl-discovery/run", response_model=FirecrawlDiscoveryTelemetry, dependencies=[Depends(verify_api_key)])
 def internal_run_firecrawl_discovery(
-    req: FirecrawlDiscoveryPlan | FirecrawlDiscoveryRunRequest | None = None,
+    req: dict | None = Body(default=None),
+    force: bool = False,
+    run_id: str | None = None,
     db: Session = Depends(get_db),
 ):
     try:
         plan = None
-        force = False
+        effective_force = force
+        effective_run_id = run_id
         if req is not None:
-            if isinstance(req, FirecrawlDiscoveryRunRequest):
-                plan = req.plan
-                force = req.force
-            elif isinstance(req, FirecrawlDiscoveryPlan):
-                plan = req
-        return execute_discovery_run(db, plan=plan, force=force)
+            # Keep both historical forms: a plan object directly, and the
+            # wrapper {plan, force, run_id}.  Parsing the discriminator here
+            # avoids Pydantic's permissive union selecting the wrong model.
+            wrapper_only_keys = {"plan", "force", "run_id"}
+            if "plan" in req or (
+                set(req).issubset(wrapper_only_keys)
+                and bool(set(req) & {"force", "run_id"})
+            ):
+                wrapper = FirecrawlDiscoveryRunRequest.model_validate(req)
+                plan = wrapper.plan
+                effective_force = wrapper.force
+                effective_run_id = wrapper.run_id or effective_run_id
+            else:
+                plan = FirecrawlDiscoveryPlan.model_validate(req)
+                effective_run_id = plan.run_id or effective_run_id
+        return execute_discovery_run(db, plan=plan, force=effective_force, run_id=effective_run_id)
+    except DiscoveryPlanConflict:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Discovery run_id is already bound to a different plan")
+    except ValidationError:
+        db.rollback()
+        raise HTTPException(status_code=422, detail="Invalid Firecrawl discovery request")
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception:
         logger.exception("Failed to execute Firecrawl discovery run")
         raise HTTPException(status_code=500, detail="Internal server error")
 
-from app.schemas.firecrawl import FirecrawlTelemetryResponse
+from app.schemas.firecrawl import FirecrawlTelemetryResponse, FirecrawlFunnelResponse, FirecrawlStageCounters
 from app.services.firecrawl_quota import get_firecrawl_budget_state
 
 @router.get("/internal/firecrawl-telemetry", response_model=FirecrawlTelemetryResponse, dependencies=[Depends(verify_api_key)])
 def internal_get_firecrawl_telemetry(db: Session = Depends(get_db)):
     state = get_firecrawl_budget_state(db)
+    # Global stage counters cannot be truthfully proven from un-attributed historical data.
+    # Do not mislabel global job counts as validated, eligible, or recommended stages.
+    # Authoritative, execution-attributed stage metrics are served by /internal/firecrawl-discovery/funnel.
+    stage_counters = FirecrawlStageCounters(
+        candidates_found=None,
+        validated_individual=None,
+        enriched=None,
+        eligible=None,
+        recommended=None,
+    )
+
     return FirecrawlTelemetryResponse(
         monthly_cap=state["monthly_cap"],
         monthly_used=state["monthly_used"],
@@ -520,7 +520,166 @@ def internal_get_firecrawl_telemetry(db: Session = Depends(get_db)):
         quota_denied=state["quota_denied"],
         last_operation=state["last_operation"],
         is_exhausted=state["is_exhausted"],
+        stage_counters=stage_counters,
     )
+
+@router.get("/internal/firecrawl-discovery/funnel", response_model=FirecrawlFunnelResponse, dependencies=[Depends(verify_api_key)])
+def internal_get_firecrawl_discovery_funnel(execution_id: int | None = None, db: Session = Depends(get_db)):
+    try:
+        rejections_by_reason: dict[str, int] = {}
+        if execution_id is not None:
+            exec_row = db.execute(
+                text("SELECT id, error_message, jobs_fresher_eligible FROM search_execution WHERE id = :eid"),
+                {"eid": execution_id}
+            ).mappings().first()
+            if not exec_row:
+                raise HTTPException(status_code=404, detail="Execution not found")
+
+            if exec_row["error_message"]:
+                try:
+                    parsed_err = json.loads(exec_row["error_message"])
+                    if isinstance(parsed_err, dict) and "rejections_by_reason" in parsed_err:
+                        rejections_by_reason.update(parsed_err["rejections_by_reason"])
+                except Exception:
+                    pass
+
+            enrich_rejections = db.execute(text("""
+                SELECT result_telemetry->>'reason' as r_reason, COUNT(*) as cnt
+                FROM job_enrichments
+                WHERE source_execution_id = :eid
+                  AND status = 'unsupported'
+                  AND result_telemetry->>'reason' IS NOT NULL
+                GROUP BY result_telemetry->>'reason'
+            """), {"eid": execution_id}).fetchall()
+            for r_row in enrich_rejections:
+                if r_row[0]:
+                    rejections_by_reason[r_row[0]] = rejections_by_reason.get(r_row[0], 0) + r_row[1]
+
+            jobs_stats = db.execute(text("""
+                SELECT
+                    COUNT(*) AS total_jobs,
+                    COUNT(*) FILTER (WHERE j.description_is_snippet = TRUE) AS snippet_jobs,
+                    COUNT(*) FILTER (WHERE j.description_is_snippet = FALSE) AS full_desc_jobs
+                FROM jobs j
+                JOIN job_enrichments e ON e.job_id = j.id
+                WHERE e.source_execution_id = :eid
+            """), {"eid": execution_id}).mappings().first() or {}
+
+            enrich_stats = db.execute(text("""
+                SELECT
+                    status,
+                    COUNT(*) as cnt
+                FROM job_enrichments
+                WHERE source_execution_id = :eid
+                GROUP BY status
+            """), {"eid": execution_id}).fetchall()
+            enrich_map = {row[0]: row[1] for row in enrich_stats}
+
+            rejected_listings_cnt = db.execute(text("""
+                SELECT COUNT(*)
+                FROM job_enrichments
+                WHERE source_execution_id = :eid
+                  AND status = 'unsupported'
+                  AND (error_reason LIKE 'rejected_listing_content%' OR result_telemetry->>'validation' = 'rejected_listing')
+            """), {"eid": execution_id}).scalar() or 0
+
+            fresher_eligible_cnt = exec_row["jobs_fresher_eligible"] or 0
+
+            recs_stats = db.execute(text("""
+                SELECT
+                    COUNT(*) AS total_recs,
+                    COUNT(*) FILTER (WHERE r.delivery_id IS NOT NULL) AS delivered_recs,
+                    COUNT(*) FILTER (WHERE r.delivery_id IS NULL) AS pending_recs
+                FROM recommendation_history r
+                JOIN jobs j ON j.id = r.job_id
+                JOIN job_enrichments e ON e.job_id = j.id
+                JOIN users u ON u.id = r.user_id AND u.is_active = TRUE
+                WHERE e.source_execution_id = :eid
+            """), {"eid": execution_id}).mappings().first() or {}
+
+        else:
+            jobs_stats = db.execute(text("""
+                SELECT
+                    COUNT(*) AS total_jobs,
+                    COUNT(*) FILTER (WHERE description_is_snippet = TRUE) AS snippet_jobs,
+                    COUNT(*) FILTER (WHERE description_is_snippet = FALSE) AS full_desc_jobs
+                FROM jobs
+                WHERE source = 'firecrawl'
+            """)).mappings().first() or {}
+
+            enrich_stats = db.execute(text("""
+                SELECT
+                    status,
+                    COUNT(*) as cnt
+                FROM job_enrichments e
+                JOIN jobs j ON j.id = e.job_id
+                WHERE j.source = 'firecrawl'
+                GROUP BY status
+            """)).fetchall()
+            enrich_map = {row[0]: row[1] for row in enrich_stats}
+
+            rejected_listings_cnt = db.execute(text("""
+                SELECT COUNT(*)
+                FROM job_enrichments e
+                JOIN jobs j ON j.id = e.job_id
+                WHERE j.source = 'firecrawl'
+                  AND e.status = 'unsupported'
+                  AND (e.error_reason LIKE 'rejected_listing_content%' OR e.result_telemetry->>'validation' = 'rejected_listing')
+            """)).scalar() or 0
+
+            fresher_eligible_cnt = db.execute(text("""
+                SELECT COALESCE(SUM(jobs_fresher_eligible), 0)
+                FROM search_execution
+                WHERE provider_name = 'firecrawl'
+            """)).scalar() or 0
+
+            recs_stats = db.execute(text("""
+                SELECT
+                    COUNT(*) AS total_recs,
+                    COUNT(*) FILTER (WHERE r.delivery_id IS NOT NULL) AS delivered_recs,
+                    COUNT(*) FILTER (WHERE r.delivery_id IS NULL) AS pending_recs
+                FROM recommendation_history r
+                JOIN jobs j ON j.id = r.job_id
+                JOIN users u ON u.id = r.user_id AND u.is_active = TRUE
+                WHERE j.source = 'firecrawl'
+            """)).mappings().first() or {}
+
+            exec_rejections = db.execute(text("""
+                SELECT error_message FROM search_execution
+                WHERE provider_name = 'firecrawl' AND error_message LIKE '%rejections_by_reason%'
+            """)).fetchall()
+            for (err_msg,) in exec_rejections:
+                if err_msg:
+                    try:
+                        p_err = json.loads(err_msg)
+                        if isinstance(p_err, dict) and "rejections_by_reason" in p_err:
+                            for r_k, r_v in p_err["rejections_by_reason"].items():
+                                rejections_by_reason[r_k] = rejections_by_reason.get(r_k, 0) + r_v
+                    except Exception:
+                        pass
+
+        return FirecrawlFunnelResponse(
+            execution_id=execution_id,
+            jobs_ingested=jobs_stats.get("total_jobs", 0),
+            jobs_snippet=jobs_stats.get("snippet_jobs", 0),
+            jobs_full_description=jobs_stats.get("full_desc_jobs", 0),
+            enrichments_pending=enrich_map.get("pending", 0),
+            enrichments_in_progress=enrich_map.get("in_progress", 0),
+            enrichments_success=enrich_map.get("success", 0),
+            enrichments_unsupported=enrich_map.get("unsupported", 0),
+            enrichments_failure=enrich_map.get("failure", 0),
+            listings_rejected_at_enrichment=rejected_listings_cnt,
+            fresher_eligible=fresher_eligible_cnt,
+            recommendations_total=recs_stats.get("total_recs", 0),
+            recommendations_delivered=recs_stats.get("delivered_recs", 0),
+            recommendations_pending=recs_stats.get("pending_recs", 0),
+            rejections_by_reason=rejections_by_reason,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Failed to retrieve Firecrawl discovery funnel")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 class NotificationClaimRequest(BaseModel):
     user_id: int | None = None
@@ -538,6 +697,7 @@ class NotificationClaimResponse(BaseModel):
     user_id: int
     delivery_id: str
     recommendations: list[NotificationRecommendation]
+    telegram_chat_id: str | None = None
 
 class NotificationSendStartRequest(BaseModel):
     user_id: int
@@ -562,7 +722,7 @@ class NotificationAcknowledgeResponse(BaseModel):
 class NotificationFailRequest(BaseModel):
     user_id: int
     delivery_id: str = Field(..., max_length=64, min_length=1)
-    reason: str = Field(..., min_length=1)
+    reason: str = Field(..., min_length=1, max_length=500)
     definitive: bool = Field(False, description="Set True only for definitive send rejection")
 
 class NotificationFailResponse(BaseModel):
@@ -578,7 +738,63 @@ class NotificationRecoverStaleResponse(BaseModel):
     recovered_deliveries: int
     released_recommendations: int
 
+
+def _notification_owner(db: Session) -> tuple[int | None, str | None]:
+    """Resolve the one configured notification owner, fail-closed on ambiguity."""
+    active_ids = [row[0] for row in db.execute(
+        text("SELECT id FROM users WHERE is_active = true ORDER BY id ASC")
+    ).all()]
+    if len(active_ids) != 1:
+        raise HTTPException(status_code=409, detail="Exactly one active notification owner is required")
+
+    configured = os.getenv("TELEGRAM_OWNER_USER_ID") or os.getenv("NOTIFICATION_OWNER_USER_ID")
+    if configured:
+        try:
+            owner_id = int(configured)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=409, detail="Notification owner configuration is invalid")
+        if owner_id not in active_ids:
+            raise HTTPException(status_code=409, detail="Notification owner is not active")
+    else:
+        owner_id = active_ids[0]
+
+    return owner_id, os.getenv("TELEGRAM_CHAT_ID", "").strip() or None
+
+
+def _require_notification_owner(db: Session, requested_user_id: int | None) -> tuple[int | None, str | None]:
+    owner_id, chat_id = _notification_owner(db)
+    if owner_id is not None and requested_user_id is not None and requested_user_id != owner_id:
+        # Keep the delivery-id wording used by existing callers: a user can
+        # never probe or claim another owner's delivery.
+        raise HTTPException(status_code=409, detail="delivery_id conflict")
+    return owner_id, chat_id
+
+
+def _mark_delivery_unknown(db: Session, delivery_id: str, user_id: int, reason: str) -> None:
+    """Persist unknown metadata when the integrated notification schema has it.
+
+    Before the main agent's schema migration lands, ``send_started_at`` itself
+    remains the durable unknown fence; this compatibility branch avoids turning
+    that safe state into a 500 against an older database.
+    """
+    columns = set(db.execute(text("""
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'notification_deliveries'
+          AND column_name IN ('unknown_at', 'unknown_reason')
+    """)).scalars().all())
+    if {"unknown_at", "unknown_reason"}.issubset(columns):
+        db.execute(text("""
+            UPDATE notification_deliveries
+            SET unknown_at = COALESCE(unknown_at, clock_timestamp()),
+                unknown_reason = COALESCE(unknown_reason, :reason)
+            WHERE delivery_id = :delivery_id AND user_id = :user_id
+              AND notified_at IS NULL AND send_started_at IS NOT NULL
+        """), {"delivery_id": delivery_id, "user_id": user_id, "reason": reason[:500]})
+
 def recover_stale_pre_send_claims(db: Session, stale_minutes: int = 30) -> tuple[int, int]:
+    # A crashed worker may never publish its send result. Mark its uncertain
+    # external outcome explicitly, but never release these recommendations.
+    _mark_stale_delivery_unknown(db, stale_minutes)
     stale_deliveries = db.execute(
         text("""
         SELECT delivery_id FROM notification_deliveries
@@ -612,37 +828,38 @@ def recover_stale_pre_send_claims(db: Session, stale_minutes: int = 30) -> tuple
 
     return deleted_count, released_count
 
+
+def _mark_stale_delivery_unknown(db: Session, stale_minutes: int) -> None:
+    columns = set(db.execute(text("""
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'notification_deliveries'
+          AND column_name IN ('unknown_at', 'unknown_reason')
+    """)).scalars().all())
+    if {"unknown_at", "unknown_reason"}.issubset(columns):
+        db.execute(text("""
+            UPDATE notification_deliveries
+            SET unknown_at = clock_timestamp(),
+                unknown_reason = 'Send outcome missing after worker interruption'
+            WHERE send_started_at IS NOT NULL AND notified_at IS NULL
+              AND invalidated_at IS NULL AND unknown_at IS NULL
+              AND send_started_at <= clock_timestamp() - (:stale_minutes || ' minutes')::INTERVAL
+        """), {"stale_minutes": stale_minutes})
+
 @router.post("/internal/notifications/claim", response_model=NotificationClaimResponse, dependencies=[Depends(verify_api_key)])
 def claim_notifications(req: NotificationClaimRequest, db: Session = Depends(get_db)):
     try:
         from sqlalchemy.exc import IntegrityError
 
-        # 1. Resolve intended active user
-        target_user_id = req.user_id
-        if target_user_id is not None:
-            user_exists = db.execute(
-                text("SELECT 1 FROM users WHERE id = :user_id AND is_active = true"),
-                {"user_id": target_user_id}
-            ).scalar()
-            if not user_exists:
-                raise HTTPException(status_code=404, detail="Active user not found")
-        else:
-            target_user_id = db.execute(text("""
-                SELECT u.id
-                FROM users u
-                JOIN recommendation_history r ON r.user_id = u.id
-                WHERE u.is_active = true AND r.delivery_id IS NULL
-                ORDER BY r.recommended_at ASC
-                LIMIT 1
-            """)).scalar()
-            if target_user_id is None:
-                target_user_id = db.execute(text("SELECT id FROM users WHERE is_active = true ORDER BY id ASC LIMIT 1")).scalar()
-            if target_user_id is None:
-                return NotificationClaimResponse(
-                    user_id=0,
-                    delivery_id=req.delivery_id,
-                    recommendations=[]
-                )
+        # A global Telegram destination is safe only for one owner.  Never
+        # dynamically select a different active user's recommendations.
+        target_user_id, telegram_chat_id = _require_notification_owner(db, req.user_id)
+        if target_user_id is None:
+            return NotificationClaimResponse(
+                user_id=0,
+                delivery_id=req.delivery_id,
+                recommendations=[],
+                telegram_chat_id=telegram_chat_id,
+            )
 
         # 2. Try to record delivery intent
         try:
@@ -676,10 +893,11 @@ def claim_notifications(req: NotificationClaimRequest, db: Session = Depends(get
                 text("SELECT user_id FROM notification_deliveries WHERE delivery_id = :delivery_id"),
                 {"delivery_id": req.delivery_id}
             ).scalar()
-            if owner is not None and req.user_id is not None and owner != req.user_id:
+            if owner is None or owner != target_user_id:
                 raise HTTPException(status_code=409, detail="delivery_id conflict")
-            if owner is not None:
-                target_user_id = owner
+            if req.user_id is not None and owner != req.user_id:
+                raise HTTPException(status_code=409, detail="delivery_id conflict")
+            target_user_id = owner
 
         # Fetch jobs assigned to this delivery_id
         jobs = db.execute(
@@ -697,7 +915,8 @@ def claim_notifications(req: NotificationClaimRequest, db: Session = Depends(get
         return NotificationClaimResponse(
             user_id=target_user_id,
             delivery_id=req.delivery_id,
-            recommendations=[NotificationRecommendation(**j) for j in jobs]
+            recommendations=[NotificationRecommendation(**j) for j in jobs],
+            telegram_chat_id=telegram_chat_id,
         )
     except HTTPException:
         db.rollback()
@@ -711,9 +930,10 @@ def claim_notifications(req: NotificationClaimRequest, db: Session = Depends(get
 @router.post("/internal/notifications/send-start", response_model=NotificationSendStartResponse, dependencies=[Depends(verify_api_key)])
 def start_notification_send(req: NotificationSendStartRequest, db: Session = Depends(get_db)):
     try:
+        _require_notification_owner(db, req.user_id)
         delivery = db.execute(
             text("""
-            SELECT user_id, send_started_at, notified_at
+            SELECT user_id, send_started_at, notified_at, invalidated_at
             FROM notification_deliveries
             WHERE delivery_id = :delivery_id
             FOR UPDATE
@@ -724,6 +944,8 @@ def start_notification_send(req: NotificationSendStartRequest, db: Session = Dep
             raise HTTPException(status_code=409, detail="Delivery claim expired or reclaimed; cannot start send")
         if delivery["user_id"] != req.user_id:
             raise HTTPException(status_code=409, detail="delivery_id conflict")
+        if delivery["invalidated_at"] is not None:
+            raise HTTPException(status_code=409, detail="Delivery claim invalidated; cannot start send")
 
         if delivery["notified_at"] is not None:
             return NotificationSendStartResponse(
@@ -776,9 +998,10 @@ def start_notification_send(req: NotificationSendStartRequest, db: Session = Dep
 @router.post("/internal/notifications/fail", response_model=NotificationFailResponse, dependencies=[Depends(verify_api_key)])
 def fail_notifications(req: NotificationFailRequest, db: Session = Depends(get_db)):
     try:
+        _require_notification_owner(db, req.user_id)
         delivery = db.execute(
             text("""
-            SELECT user_id, send_started_at, notified_at
+            SELECT user_id, send_started_at, notified_at, invalidated_at
             FROM notification_deliveries
             WHERE delivery_id = :delivery_id
             FOR UPDATE
@@ -789,6 +1012,8 @@ def fail_notifications(req: NotificationFailRequest, db: Session = Depends(get_d
             raise HTTPException(status_code=404, detail="Delivery not found")
         if delivery["user_id"] != req.user_id:
             raise HTTPException(status_code=409, detail="delivery_id conflict")
+        if delivery["invalidated_at"] is not None:
+            return NotificationFailResponse(user_id=req.user_id, delivery_id=req.delivery_id, released=False, detail="Invalidated delivery; no state change")
 
         if delivery["notified_at"] is not None:
             return NotificationFailResponse(
@@ -798,12 +1023,29 @@ def fail_notifications(req: NotificationFailRequest, db: Session = Depends(get_d
                 detail="Delivery was already acknowledged; cannot release"
             )
 
+        if req.definitive and delivery["send_started_at"] is None:
+            raise HTTPException(status_code=409, detail="Definitive failure requires a valid send-start")
+
         if not req.definitive:
+            if delivery["send_started_at"] is None:
+                raise HTTPException(status_code=409, detail="Unknown send outcome requires a valid send-start")
+                _mark_delivery_unknown(db, req.delivery_id, req.user_id, req.reason)
+            db.commit()
             return NotificationFailResponse(
                 user_id=req.user_id,
                 delivery_id=req.delivery_id,
                 released=False,
                 detail="Ambiguous failure; delivery remains claimed to prevent duplicate external messages"
+            )
+
+        unknown = db.execute(
+            text("SELECT to_jsonb(notification_deliveries)->>'unknown_at' FROM notification_deliveries WHERE delivery_id = :delivery_id"),
+            {"delivery_id": req.delivery_id},
+        ).scalar()
+        if unknown is not None:
+            return NotificationFailResponse(
+                user_id=req.user_id, delivery_id=req.delivery_id, released=False,
+                detail="Unknown external outcome is fenced; cannot release automatically",
             )
 
         # Definitive failure: safely release recommendations and delete unacknowledged intent
@@ -835,9 +1077,11 @@ def fail_notifications(req: NotificationFailRequest, db: Session = Depends(get_d
 @router.post("/internal/notifications/acknowledge", response_model=NotificationAcknowledgeResponse, dependencies=[Depends(verify_api_key)])
 def acknowledge_notifications(req: NotificationAcknowledgeRequest, db: Session = Depends(get_db)):
     try:
+        _require_notification_owner(db, req.user_id)
         delivery = db.execute(
             text("""
-            SELECT user_id, notified_at
+            SELECT user_id, notified_at, send_started_at, invalidated_at,
+                   to_jsonb(notification_deliveries)->>'unknown_at' AS unknown_at
             FROM notification_deliveries
             WHERE delivery_id = :delivery_id
             FOR UPDATE
@@ -848,6 +1092,8 @@ def acknowledge_notifications(req: NotificationAcknowledgeRequest, db: Session =
             raise HTTPException(status_code=404, detail="Delivery not found")
         if delivery["user_id"] != req.user_id:
             raise HTTPException(status_code=409, detail="delivery_id conflict")
+        if delivery["invalidated_at"] is not None or delivery["send_started_at"] is None or delivery["unknown_at"] is not None:
+            raise HTTPException(status_code=409, detail="Delivery is not eligible for acknowledgement")
 
         if delivery["notified_at"] is None:
             updated = db.execute(

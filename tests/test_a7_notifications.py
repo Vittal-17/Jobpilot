@@ -54,6 +54,13 @@ def test_claim_and_acknowledge_state_semantics(db_session: Session):
     rec = db_session.query(RecommendationHistoryModel).filter_by(job_id=resp.recommendations[0].job_id).first()
     assert rec.delivery_id == "del_1"
 
+    # Acknowledgement is valid only after the durable send-start fence.
+    start_resp = start_notification_send(
+        NotificationSendStartRequest(user_id=user_id, delivery_id="del_1"),
+        db_session,
+    )
+    assert start_resp.authorized is True
+
     ack_req = NotificationAcknowledgeRequest(user_id=user_id, delivery_id="del_1")
     ack_resp = acknowledge_notifications(ack_req, db_session)
     assert ack_resp.acknowledged is True
@@ -121,7 +128,9 @@ def test_duplicate_same_delivery_id_requests_concurrent(db_session: Session):
 def test_cross_user_delivery_id_collision(db_session: Session):
     user_id1, j1, j2 = setup_data(db_session)
 
-    user2 = User(email="test_a7_cross@example.com", is_active=True, password_hash="test")
+    # The notification destination has one active owner.  A second user may
+    # exist, but must not be able to claim or reuse the owner's delivery.
+    user2 = User(email="test_a7_cross@example.com", is_active=False, password_hash="test")
     db_session.add(user2)
     db_session.commit()
     user_id2 = user2.id
@@ -137,6 +146,13 @@ def test_cross_user_delivery_id_collision(db_session: Session):
 
     assert excinfo.value.status_code == 409
     assert excinfo.value.detail == "delivery_id conflict"
+    delivery = db_session.query(NotificationDeliveryModel).filter_by(
+        delivery_id="shared_del_id"
+    ).one()
+    assert delivery.user_id == user_id1
+    assert db_session.query(RecommendationHistoryModel).filter_by(
+        delivery_id="shared_del_id"
+    ).count() == 1
 
 def test_successful_acknowledgement(db_session: Session):
     user_id, j1, j2 = setup_data(db_session)
@@ -407,8 +423,9 @@ def test_same_delivery_acknowledgement_idempotency(db_session: Session):
     recs = db_session.query(RecommendationHistoryModel).filter_by(delivery_id="del_ack_idemp").all()
     assert len(recs) == 2
 
-def test_multi_user_scoping(db_session: Session):
-    # 1. Create two distinct active users
+def test_multiple_active_notification_owners_fail_closed(db_session: Session):
+    # A global notification destination must fail closed when ownership is
+    # ambiguous, even when the caller supplies an explicit user_id.
     user_a = User(email="user_a_scoped@example.com", is_active=True, password_hash="test")
     user_b = User(email="user_b_scoped@example.com", is_active=True, password_hash="test")
     db_session.add_all([user_a, user_b])
@@ -424,62 +441,25 @@ def test_multi_user_scoping(db_session: Session):
     db_session.add_all([rec_a, rec_b])
     db_session.commit()
 
-    # 2. Dynamic user claim (user_id omitted) resolves user with oldest pending recommendation
-    auto_claim_1 = claim_notifications(
-        NotificationClaimRequest(delivery_id="del_scope_auto_1", limit=5),
-        db_session,
-    )
-    assert auto_claim_1.user_id in (user_a.id, user_b.id)
-    first_claimed_user = auto_claim_1.user_id
-    assert len(auto_claim_1.recommendations) == 1
+    for request in (
+        NotificationClaimRequest(
+            user_id=user_a.id,
+            delivery_id="del_scope_explicit_ambiguous",
+            limit=5,
+        ),
+        NotificationClaimRequest(delivery_id="del_scope_omitted_ambiguous", limit=5),
+    ):
+        with pytest.raises(HTTPException) as excinfo:
+            claim_notifications(request, db_session)
+        assert excinfo.value.status_code == 409
+        assert excinfo.value.detail == "Exactly one active notification owner is required"
 
-    # Second dynamic user claim resolves the other user
-    auto_claim_2 = claim_notifications(
-        NotificationClaimRequest(delivery_id="del_scope_auto_2", limit=5),
-        db_session,
-    )
-    second_claimed_user = auto_claim_2.user_id
-    assert second_claimed_user != first_claimed_user
-    assert second_claimed_user in (user_a.id, user_b.id)
-    assert len(auto_claim_2.recommendations) == 1
-
-    # 3. Explicit user scoping: claim explicitly for user_a
-    job_a2 = JobModel(title="Job A2", company="Corp A", source="adzuna", source_job_id="scope_a2", discovered_at=datetime.now(timezone.utc))
-    db_session.add(job_a2)
-    db_session.flush()
-    db_session.add(RecommendationHistoryModel(user_id=user_a.id, job_id=job_a2.id))
-    db_session.commit()
-
-    explicit_claim_a = claim_notifications(
-        NotificationClaimRequest(user_id=user_a.id, delivery_id="del_scope_explicit_a", limit=5),
-        db_session,
-    )
-    assert explicit_claim_a.user_id == user_a.id
-    assert len(explicit_claim_a.recommendations) == 1
-    assert explicit_claim_a.recommendations[0].job_id == job_a2.id
-
-    # 4. User scoping boundary on operations:
-    # User B cannot start, fail, or acknowledge User A's delivery
-    with pytest.raises(HTTPException) as excinfo:
-        start_notification_send(
-            NotificationSendStartRequest(user_id=user_b.id, delivery_id="del_scope_explicit_a"),
-            db_session,
-        )
-    assert excinfo.value.status_code == 409
-
-    with pytest.raises(HTTPException) as excinfo:
-        acknowledge_notifications(
-            NotificationAcknowledgeRequest(user_id=user_b.id, delivery_id="del_scope_explicit_a"),
-            db_session,
-        )
-    assert excinfo.value.status_code == 409
-
-    with pytest.raises(HTTPException) as excinfo:
-        fail_notifications(
-            NotificationFailRequest(user_id=user_b.id, delivery_id="del_scope_explicit_a", reason="test", definitive=True),
-            db_session,
-        )
-    assert excinfo.value.status_code == 409
+    # Ambiguity must not create a delivery or partially claim either user's
+    # recommendations.
+    assert db_session.query(NotificationDeliveryModel).count() == 0
+    assert db_session.query(RecommendationHistoryModel).filter(
+        RecommendationHistoryModel.delivery_id.is_not(None)
+    ).count() == 0
 
 def test_recover_stale_notifications_endpoint(db_session: Session):
     user_id, j1, j2 = setup_data(db_session)
@@ -519,7 +499,7 @@ def test_recover_stale_notifications_endpoint(db_session: Session):
     assert rec_resp2.recovered_deliveries == 0
     assert rec_resp2.released_recommendations == 0
 
-def test_recover_stale_notifications_commits_when_no_active_users(db_session: Session):
+def test_recover_stale_notifications_commits_when_no_active_owner(db_session: Session):
     from sqlalchemy.orm import sessionmaker
 
     user_id, j1, j2 = setup_data(db_session)
@@ -537,12 +517,18 @@ def test_recover_stale_notifications_commits_when_no_active_users(db_session: Se
     db_session.execute(text("UPDATE users SET is_active = false"))
     db_session.commit()
 
-    # Verify claim returns empty because there are no active users
-    empty_claim = claim_notifications(
-        NotificationClaimRequest(delivery_id="del_no_active_attempt", limit=5),
-        db_session,
-    )
-    assert empty_claim.recommendations == []
+    # No active owner must fail closed rather than returning an ambiguous
+    # empty claim.
+    with pytest.raises(HTTPException) as excinfo:
+        claim_notifications(
+            NotificationClaimRequest(delivery_id="del_no_active_attempt", limit=5),
+            db_session,
+        )
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.detail == "Exactly one active notification owner is required"
+    assert db_session.query(NotificationDeliveryModel).filter_by(
+        delivery_id="del_no_active_attempt"
+    ).first() is None
 
     # Dedicated recovery endpoint recovers and commits independently despite no active users
     rec_resp = recover_stale_notifications(NotificationRecoverStaleRequest(stale_minutes=30), db_session)

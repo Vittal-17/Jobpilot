@@ -9,7 +9,7 @@ from app.models.job import Job
 from app.providers.types import ProviderName
 from app.providers.registry import PROVIDER_PRIORITY, create_provider, is_provider_enabled
 from app.providers.base import JobProvider
-from app.providers.firecrawl import FirecrawlProvider, calculate_search_credits
+from app.providers.firecrawl import FirecrawlProvider, calculate_search_credits, formulate_individual_job_query
 from app.providers.exceptions import (
     ProviderConfigurationError,
     ProviderHTTPError,
@@ -40,15 +40,20 @@ def restore_firecrawl_env():
     orig_disc_enabled = getattr(settings, "firecrawl_discovery_enabled", False)
     orig_cap = settings.firecrawl_monthly_automation_cap
     orig_budget = settings.firecrawl_monthly_budget
+    orig_reserve = settings.firecrawl_reserved_credits
 
     settings.firecrawl_api_key = "test_fc_key"
     settings.firecrawl_enabled = True
     settings.firecrawl_discovery_enabled = True
     settings.firecrawl_monthly_automation_cap = 900
     settings.firecrawl_monthly_budget = 1000
+    settings.firecrawl_reserved_credits = 100
 
     db = SessionLocal()
     db.execute(text("DELETE FROM provider_usage WHERE provider_name IN ('firecrawl', 'firecrawl_monthly')"))
+    db.execute(text("DELETE FROM firecrawl_operations"))
+    db.execute(text("DELETE FROM provider_reservations"))
+    db.execute(text("DELETE FROM firecrawl_budget_state"))
     db.execute(text("DELETE FROM job_enrichments WHERE url LIKE '%firecrawl_test%'"))
     db.execute(text("DELETE FROM job_sources WHERE source = 'firecrawl' OR url LIKE '%firecrawl_test%'"))
     db.execute(text("DELETE FROM jobs WHERE source = 'firecrawl' OR url LIKE '%firecrawl_test%'"))
@@ -60,6 +65,9 @@ def restore_firecrawl_env():
     finally:
         db = SessionLocal()
         db.execute(text("DELETE FROM provider_usage WHERE provider_name IN ('firecrawl', 'firecrawl_monthly')"))
+        db.execute(text("DELETE FROM firecrawl_operations"))
+        db.execute(text("DELETE FROM provider_reservations"))
+        db.execute(text("DELETE FROM firecrawl_budget_state"))
         db.execute(text("DELETE FROM job_enrichments WHERE url LIKE '%firecrawl_test%'"))
         db.execute(text("DELETE FROM job_sources WHERE source = 'firecrawl' OR url LIKE '%firecrawl_test%'"))
         db.execute(text("DELETE FROM jobs WHERE source = 'firecrawl' OR url LIKE '%firecrawl_test%'"))
@@ -71,6 +79,7 @@ def restore_firecrawl_env():
         settings.firecrawl_discovery_enabled = orig_disc_enabled
         settings.firecrawl_monthly_automation_cap = orig_cap
         settings.firecrawl_monthly_budget = orig_budget
+        settings.firecrawl_reserved_credits = orig_reserve
 
 
 def test_provider_name_enum_contains_firecrawl():
@@ -203,6 +212,7 @@ def test_firecrawl_provider_search_jobs_normalization():
             {
                 "url": "https://techcorp.com/careers/py-dev-123",
                 "title": "Junior Python Developer at TechCorp",
+                "location": "Bengaluru",
                 "description": "Great entry level role for freshers."
             },
             {
@@ -242,10 +252,51 @@ def test_firecrawl_provider_search_jobs_normalization():
     assert str(job1.url) == "https://techcorp.com/careers/py-dev-123"
     assert job1.source_job_id.startswith("fc_")
 
+    # H09: Job 2 has no result-level location -> location MUST be None, NOT inherited from search query ("Bengaluru")
     job2 = jobs[1]
     assert job2.source == "firecrawl"
     assert job2.title == "Backend Engineer"
     assert job2.company == "StartupIO"
+    assert job2.location is None
+
+
+@respx.mock
+def test_h09_location_separation_from_search_query():
+    """
+    H09: Verify Job.location is populated ONLY from explicitly available, validated
+    result-level job location and NEVER substitutes query.location.
+    """
+    mock_resp = {
+        "success": True,
+        "data": [
+            {
+                "url": "https://example.com/job-no-loc",
+                "title": "Python Developer - Acme Corp",
+                "description": "Great role."
+            },
+            {
+                "url": "https://example.com/job-explicit-loc",
+                "title": "Python Developer - Beta Corp",
+                "location": "Chennai",
+                "description": "Role in Chennai."
+            },
+        ]
+    }
+    respx.post("https://api.firecrawl.dev/v2/search").mock(return_value=httpx.Response(200, json=mock_resp))
+
+    provider = FirecrawlProvider()
+    query = JobSearchQuery(keywords="Python Developer", location="Bengaluru", page=1, page_size=10)
+
+    jobs = provider.search_jobs(query)
+    assert len(jobs) == 2
+
+    # Job 1 has no result-level location: must be None, NOT "Bengaluru"
+    assert jobs[0].company == "Acme Corp"
+    assert jobs[0].location is None
+
+    # Job 2 has explicit result-level location "Chennai": must be "Chennai", NOT search query "Bengaluru"
+    assert jobs[1].company == "Beta Corp"
+    assert jobs[1].location == "Chennai"
 
 
 @respx.mock
@@ -317,7 +368,7 @@ def test_firecrawl_provider_search_jobs_v2_web_format():
     assert job1.source == "firecrawl"
     assert job1.title == "Junior Python Developer"
     assert job1.company == "TechCorp"
-    assert job1.location == "Bengaluru"
+    assert job1.location is None
     assert job1.description_is_snippet is True
     assert job1.description == "Great entry level role for freshers."
     assert str(job1.url) == "https://techcorp.com/careers/v2-py-dev"
@@ -339,8 +390,9 @@ def test_run_ingestion_with_firecrawl_quota_success():
             "data": [
                 {
                     "url": "https://example.com/firecrawl_test_job_1",
-                    "title": "Software Engineer - InnovateLab",
-                    "description": "Fresher role in Bangalore."
+                        "title": "Software Engineer - InnovateLab",
+                        "description": "Fresher role in Bangalore.",
+                        "location": "Bangalore"
                 }
             ]
         }
@@ -527,7 +579,28 @@ def test_firecrawl_title_company_extraction_realistic_delimiters():
     assert title == "Backend Engineer"
     assert company == "StartupIO"
 
-    # 8. Ambiguous title fails closed to Unknown
+    # 8. H08 Experience text MUST NOT be misidentified as company name, and original title preserved
+    title, company = _extract_company_from_title("Python Developer - 3+ Years of Experience")
+    assert title == "Python Developer - 3+ Years of Experience"
+    assert company == "Unknown"
+
+    title, company = _extract_company_from_title("Python Developer - 3+ yrs")
+    assert title == "Python Developer - 3+ yrs"
+    assert company == "Unknown"
+
+    title, company = _extract_company_from_title("Python Developer - 0-2 years")
+    assert title == "Python Developer - 0-2 years"
+    assert company == "Unknown"
+
+    title, company = _extract_company_from_title("Python Developer - 5+ yrs exp")
+    assert title == "Python Developer - 5+ yrs exp"
+    assert company == "Unknown"
+
+    title, company = _extract_company_from_title("Python Developer - 1+ yr")
+    assert title == "Python Developer - 1+ yr"
+    assert company == "Unknown"
+
+    # 9. Ambiguous title fails closed to Unknown
     title, company = _extract_company_from_title("Hiring Fresher Candidates")
     assert company == "Unknown"
 
@@ -592,7 +665,7 @@ def test_canonical_deduplication_unknown_company_safe():
             location="Bengaluru",
             description="Role in Bengaluru.",
             description_is_snippet=True,
-            url="https://example.com/firecrawl_test_unk_1",
+            url="https://example.com/jobs/firecrawl_test_unk_1",
         )
         saved1, created1 = save_job(db, job1)
         db.commit()
@@ -608,7 +681,7 @@ def test_canonical_deduplication_unknown_company_safe():
             location="Bengaluru",
             description="Role in Bengaluru.",
             description_is_snippet=True,
-            url="https://example.com/firecrawl_test_unk_1",
+            url="https://example.com/jobs/firecrawl_test_unk_1",
         )
         saved2, created2 = save_job(db, job2)
         db.commit()
@@ -625,7 +698,7 @@ def test_canonical_deduplication_unknown_company_safe():
             location="Bengaluru",
             description="Different job in Bengaluru.",
             description_is_snippet=True,
-            url="https://example.com/firecrawl_test_unk_3",
+            url="https://example.com/jobs/firecrawl_test_unk_3",
         )
         saved3, created3 = save_job(db, job3)
         db.commit()
@@ -633,3 +706,41 @@ def test_canonical_deduplication_unknown_company_safe():
         assert saved3.id != saved1.id
     finally:
         db.close()
+
+
+def test_formulate_individual_job_query():
+    # When no explicit vacancy markers are present, '"apply"' is appended
+    assert formulate_individual_job_query("Python Developer", "Bengaluru") == 'Python Developer Bengaluru "apply"'
+    assert formulate_individual_job_query("Software Engineer") == 'Software Engineer "apply"'
+
+    # When explicit markers are present, no extra token is appended
+    assert formulate_individual_job_query("Python Developer apply", "Bengaluru") == "Python Developer apply Bengaluru"
+    assert formulate_individual_job_query("Backend Engineer job opening", "Remote") == "Backend Engineer job opening Remote"
+    assert formulate_individual_job_query("Frontend Engineer vacancy", "Pune") == "Frontend Engineer vacancy Pune"
+    assert formulate_individual_job_query("Data Scientist vacancies", "Hyderabad") == "Data Scientist vacancies Hyderabad"
+
+    # Empty inputs
+    assert formulate_individual_job_query("", "") == ""
+    assert formulate_individual_job_query("   ") == ""
+
+
+@respx.mock
+def test_firecrawl_provider_search_query_formulation():
+    import json
+    mock_resp = {"success": True, "data": []}
+    route = respx.post("https://api.firecrawl.dev/v2/search").mock(return_value=httpx.Response(200, json=mock_resp))
+
+    provider = FirecrawlProvider()
+    query = JobSearchQuery(keywords="Python Developer", location="Bengaluru", page=1, page_size=10)
+    provider.search_jobs(query)
+
+    assert route.called
+    sent_payload = json.loads(route.calls.last.request.content)
+    # Supported discovery filters are part of the v2 request contract.
+    assert sent_payload == {
+        "query": 'Python Developer Bengaluru "apply"',
+        "limit": 10,
+        "tbs": "qdr:m",
+        "country": "in",
+        "location": "Bengaluru",
+    }

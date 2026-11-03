@@ -14,6 +14,7 @@ from .job_source import JobSourceModel
 from .recommendation_history import RecommendationHistoryModel
 from .notification_delivery import NotificationDeliveryModel
 from .firecrawl_operation import FirecrawlOperationModel
+from .execution_outcome import ExecutionJobModel, ProviderReservationModel, FirecrawlBudgetModel, FirecrawlDiscoveryRunModel, FirecrawlQueryStateModel
 
 __all__ = [
     "JobModel",

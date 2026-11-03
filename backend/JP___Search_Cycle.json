@@ -19,15 +19,10 @@
         "name": "Start",
         "type": "n8n-nodes-base.scheduleTrigger",
         "typeVersion": 1,
-        "position": [100, 300]
-      },
-      {
-        "parameters": {},
-        "id": "node-loop",
-        "name": "Loop",
-        "type": "n8n-nodes-base.loop",
-        "typeVersion": 1,
-        "position": [300, 300]
+        "position": [
+          100,
+          300
+        ]
       },
       {
         "parameters": {
@@ -43,7 +38,10 @@
         "name": "Select Next",
         "type": "n8n-nodes-base.httpRequest",
         "typeVersion": 4.1,
-        "position": [500, 300],
+        "position": [
+          500,
+          300
+        ],
         "credentials": {
           "httpHeaderAuth": {
             "id": "T0w0H2O4M9E6W4T6",
@@ -54,12 +52,18 @@
       {
         "parameters": {
           "conditions": {
-            "options": {"caseSensitive": true, "typeValidation": "strict"},
+            "options": {
+              "caseSensitive": true,
+              "typeValidation": "strict"
+            },
             "conditions": [
               {
                 "leftValue": "={{ $json.action }}",
                 "rightValue": "execute",
-                "operator": {"type": "string", "operation": "equals"}
+                "operator": {
+                  "type": "string",
+                  "operation": "equals"
+                }
               }
             ],
             "combinator": "and"
@@ -69,7 +73,10 @@
         "name": "Action Check",
         "type": "n8n-nodes-base.if",
         "typeVersion": 2.2,
-        "position": [700, 300]
+        "position": [
+          700,
+          300
+        ]
       },
       {
         "parameters": {
@@ -85,7 +92,10 @@
         "name": "Execute",
         "type": "n8n-nodes-base.httpRequest",
         "typeVersion": 4.1,
-        "position": [900, 200],
+        "position": [
+          900,
+          200
+        ],
         "credentials": {
           "httpHeaderAuth": {
             "id": "T0w0H2O4M9E6W4T6",
@@ -96,22 +106,99 @@
       },
       {
         "parameters": {
+          "jsCode": "return $input.all();"
+        },
+        "id": "node-loop",
+        "name": "Loop",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          600,
+          300
+        ]
+      },
+      {
+        "parameters": {
           "jsCode": "return { json: { status: 'Cycle stopped', reason: $input.first().json.reason } };"
         },
         "id": "node-stop",
         "name": "Stop",
         "type": "n8n-nodes-base.code",
         "typeVersion": 2,
-        "position": [900, 400]
+        "position": [
+          900,
+          400
+        ]
       }
     ],
     "connections": {
-      "Start": {"main": [[{"node": "Loop", "type": "main", "index": 0}]]},
-      "Loop": {"main": [[{"node": "Select Next", "type": "main", "index": 0}], []]},
-      "Select Next": {"main": [[{"node": "Action Check", "type": "main", "index": 0}]]},
-      "Action Check": {"main": [[{"node": "Execute", "type": "main", "index": 0}], [{"node": "Stop", "type": "main", "index": 0}]]},
-      "Execute": {"main": [[{"node": "Loop", "type": "main", "index": 0}]]},
-      "Stop": {"main": [[]]}
+      "Start": {
+        "main": [
+          [
+            {
+              "node": "Select Next",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Select Next": {
+        "main": [
+          [
+            {
+              "node": "Loop",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Loop": {
+        "main": [
+          [
+            {
+              "node": "Action Check",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Action Check": {
+        "main": [
+          [
+            {
+              "node": "Execute",
+              "type": "main",
+              "index": 0
+            }
+          ],
+          [
+            {
+              "node": "Stop",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Execute": {
+        "main": [
+          [
+            {
+              "node": "Select Next",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Stop": {
+        "main": [
+          []
+        ]
+      }
     }
   }
 ]

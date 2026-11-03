@@ -1,4 +1,7 @@
 import pytest
+import signal
+import sys
+import traceback
 from unittest.mock import patch
 from app.services.enrichment_worker import EnrichmentWorker
 from app.db.database import SessionLocal
@@ -11,10 +14,16 @@ import uuid
 import respx
 
 def clear_db():
+    from sqlalchemy.orm import close_all_sessions
+    close_all_sessions()
     db = SessionLocal()
     # Clean up quota rows and operational logs
     db.execute(text("DELETE FROM firecrawl_operations"))
-    db.execute(text("DELETE FROM provider_usage WHERE provider_name = 'firecrawl_monthly'"))
+    db.execute(text("DELETE FROM provider_reservations"))
+    db.execute(text("DELETE FROM firecrawl_budget_state"))
+    db.execute(text("DELETE FROM firecrawl_discovery_runs"))
+    db.execute(text("DELETE FROM firecrawl_query_state"))
+    db.execute(text("DELETE FROM provider_usage WHERE provider_name IN ('firecrawl', 'firecrawl_monthly')"))
     # Clean up any jobs created by firecrawl tests (using source = 'test_firecrawl' or test prefixes)
     db.execute(text("DELETE FROM job_enrichments WHERE job_id IN (SELECT id FROM jobs WHERE source = 'test_firecrawl' OR source_job_id LIKE 'test_fc_%')"))
     db.execute(text("DELETE FROM jobs WHERE source = 'test_firecrawl' OR source_job_id LIKE 'test_fc_%'"))
@@ -26,15 +35,35 @@ def clear_db():
 
 @pytest.fixture(autouse=True)
 def run_around_tests():
+    def timeout_handler(signum, frame):
+        sys.stderr.write("\n!!! TEST TIMEOUT (15s) TRIGGERED - Stack Trace !!!\n")
+        traceback.print_stack(frame)
+        raise TimeoutError("Test execution exceeded 15 seconds limit (indefinite hang guard)")
+
+    prev_handler = signal.signal(signal.SIGALRM, timeout_handler)
+    signal.alarm(15)
+
     orig_key = settings.firecrawl_api_key
     orig_budget = settings.firecrawl_monthly_budget
+    orig_reserve = settings.firecrawl_reserved_credits
+    orig_enabled = getattr(settings, "firecrawl_enabled", False)
+    settings.firecrawl_enabled = True
+    # These tests intentionally use small disposable budgets; opt out of the
+    # production protected reserve explicitly rather than weakening policy.
+    settings.firecrawl_reserved_credits = 0
     clear_db()
     try:
         yield
     finally:
-        settings.firecrawl_api_key = orig_key
-        settings.firecrawl_monthly_budget = orig_budget
-        clear_db()
+        try:
+            clear_db()
+        finally:
+            settings.firecrawl_api_key = orig_key
+            settings.firecrawl_monthly_budget = orig_budget
+            settings.firecrawl_reserved_credits = orig_reserve
+            settings.firecrawl_enabled = orig_enabled
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, prev_handler)
 
 def test_quota_atomicity_and_persistence():
     settings.firecrawl_api_key = "test_key"
@@ -150,8 +179,8 @@ def test_disabled_configurations_no_side_effects(mock_scrape):
         """), {"src_id": src_id}).scalar()
 
         db.execute(text("""
-            INSERT INTO job_enrichments (job_id, status, url, lease_token, lease_expires_at, attempts, created_at, updated_at)
-            VALUES (:id, 'in_progress', 'http://a.com', :token, NOW() + INTERVAL '1 hour', 0, NOW(), NOW())
+            INSERT INTO job_enrichments (job_id, status, url, lease_holder, lease_token, lease_expires_at, attempts, created_at, updated_at)
+            VALUES (:id, 'in_progress', 'http://a.com', 'test-worker', :token, NOW() + INTERVAL '1 hour', 0, NOW(), NOW())
         """), {"id": job_id, "token": token})
         db.commit()
 
@@ -195,8 +224,8 @@ def test_real_402_synchronization_via_process_job(mock_scrape):
     """), {"src_id": src_id}).scalar()
 
     db.execute(text("""
-        INSERT INTO job_enrichments (job_id, status, url, lease_token, lease_expires_at, attempts, created_at, updated_at)
-        VALUES (:id, 'in_progress', 'http://a.com', :token, NOW() + INTERVAL '1 hour', 0, NOW(), NOW())
+        INSERT INTO job_enrichments (job_id, status, url, lease_holder, lease_token, lease_expires_at, attempts, created_at, updated_at)
+        VALUES (:id, 'in_progress', 'http://a.com', 'test-worker', :token, NOW() + INTERVAL '1 hour', 0, NOW(), NOW())
     """), {"id": job_id, "token": token})
     db.commit()
 
@@ -245,7 +274,7 @@ def test_real_402_synchronization_via_process_job(mock_scrape):
 
 
 @respx.mock
-def test_transport_error_retry_state_transition():
+def test_transport_error_no_blind_retry_contract():
     settings.firecrawl_api_key = "test_key"
     settings.firecrawl_monthly_budget = 1000
 
@@ -261,8 +290,8 @@ def test_transport_error_retry_state_transition():
     """), {"src_id": src_id}).scalar()
 
     db.execute(text("""
-        INSERT INTO job_enrichments (job_id, status, url, lease_token, lease_expires_at, attempts, created_at, updated_at)
-        VALUES (:id, 'in_progress', 'http://blocked.com', :token, NOW() + INTERVAL '1 hour', 0, NOW(), NOW())
+        INSERT INTO job_enrichments (job_id, status, url, lease_holder, lease_token, lease_expires_at, attempts, created_at, updated_at)
+        VALUES (:id, 'in_progress', 'http://blocked.com', 'test-worker', :token, NOW() + INTERVAL '1 hour', 0, NOW(), NOW())
     """), {"id": job_id, "token": token})
     db.commit()
 
@@ -283,40 +312,29 @@ def test_transport_error_retry_state_transition():
         # Execute process_job without mocking complete_failure: real state transition occurs
         worker.process_job(db, job_id, "http://blocked.com", token)
 
-    # Verify actual database state transition:
-    # 1. status -> 'retry' (transient, NOT 'unsupported' and NOT 'failure')
+    # Verify intended no-blind-retry contract for ambiguous paid work:
+    # 1. status -> 'failure' (terminal failure to prevent blind paid retries after ambiguous outcomes)
     # 2. attempts incremented from 0 to 1
-    # 3. error_reason reflects the Firecrawl transient transport error
-    # 4. lease remains intact for worker reclamation
+    # 3. error_reason reflects the Firecrawl outcome unknown_after_crash error
+    # 4. lease fields cleared (lease_token is None)
     post_retry_row = db.execute(text("""
-        SELECT status, attempts, error_reason, lease_token, lease_expires_at > clock_timestamp()
+        SELECT status, attempts, error_reason, lease_token
         FROM job_enrichments
         WHERE job_id = :id
     """), {"id": job_id}).fetchone()
 
-    assert post_retry_row[0] == "retry"
+    assert post_retry_row[0] == "failure"
     assert post_retry_row[1] == 1
-    assert "Firecrawl transient error" in post_retry_row[2]
+    assert "unknown_after_crash" in post_retry_row[2]
     assert "Connection reset by peer" in post_retry_row[2]
-    assert post_retry_row[3] == token
-    assert post_retry_row[4] is True
+    assert post_retry_row[3] is None
 
-    # Now verify the max_attempts exhaustion transition:
-    # If the job had already failed (attempts = 2 with max_attempts = 3)
-    db.execute(text("UPDATE job_enrichments SET status = 'in_progress', attempts = 2 WHERE job_id = :id"), {"id": job_id})
-    db.commit()
-
-    with patch.object(worker.ssrf_client, 'fetch', side_effect=httpx.HTTPStatusError("403", request=mock_resp.request, response=mock_resp)):
-        worker.process_job(db, job_id, "http://blocked.com", token)
-
-    final_row = db.execute(text("""
-        SELECT status, attempts, error_reason
-        FROM job_enrichments
-        WHERE job_id = :id
-    """), {"id": job_id}).fetchone()
-
-    assert final_row[0] == "failure"  # Terminal failure after exhausting max_attempts
-    assert final_row[1] == 3          # Attempts reached max_attempts (3)
+    # Verify reservation status in provider_reservations is unknown_after_crash
+    reservation_status = db.execute(text("""
+        SELECT status FROM provider_reservations
+        WHERE job_id = :job_id ORDER BY created_at DESC LIMIT 1
+    """), {"job_id": job_id}).scalar()
+    assert reservation_status == "unknown_after_crash"
 
     db.close()
 
@@ -339,8 +357,8 @@ def test_redirect_wrapper_falls_to_snippet_without_mutating_description(mock_scr
     """), {"src_id": src_id, "desc": initial_snippet}).scalar()
 
     db.execute(text("""
-        INSERT INTO job_enrichments (job_id, status, url, lease_token, lease_expires_at, attempts, created_at, updated_at)
-        VALUES (:id, 'in_progress', 'https://www.adzuna.in/land/ad/560', :token, NOW() + INTERVAL '1 hour', 0, NOW(), NOW())
+        INSERT INTO job_enrichments (job_id, status, url, lease_holder, lease_token, lease_expires_at, attempts, created_at, updated_at)
+        VALUES (:id, 'in_progress', 'https://www.adzuna.in/land/ad/560', 'test-worker', :token, NOW() + INTERVAL '1 hour', 0, NOW(), NOW())
     """), {"id": job_id, "token": token})
     db.commit()
 
@@ -390,8 +408,8 @@ def test_realistic_job_with_chrome_enriches_successfully(mock_scrape):
 
     # Seed with an error_reason from a prior transient failure attempt
     db.execute(text("""
-        INSERT INTO job_enrichments (job_id, status, url, lease_token, lease_expires_at, attempts, error_reason, created_at, updated_at)
-        VALUES (:id, 'in_progress', 'https://www.adzuna.in/details/601', :token, NOW() + INTERVAL '1 hour', 1, 'Previous transient timeout', NOW(), NOW())
+        INSERT INTO job_enrichments (job_id, status, url, lease_holder, lease_token, lease_expires_at, attempts, error_reason, created_at, updated_at)
+        VALUES (:id, 'in_progress', 'https://www.adzuna.in/details/601', 'test-worker', :token, NOW() + INTERVAL '1 hour', 1, 'Previous transient timeout', NOW(), NOW())
     """), {"id": job_id, "token": token})
     db.commit()
 
@@ -414,7 +432,12 @@ def test_realistic_job_with_chrome_enriches_successfully(mock_scrape):
 
         worker.process_job(db, job_id, "https://www.adzuna.in/details/601", token)
 
-    # Verify job_enrichments transitioned to success and prior error_reason was cleared to NULL
+        # First worker only stages paid content. A fresh worker recovers and
+        # finalizes it without another provider request.
+        with patch("app.services.scraper.firecrawl.FirecrawlClient.scrape") as second_scrape:
+            EnrichmentWorker(max_attempts=3).claim_and_process(db)
+            second_scrape.assert_not_called()
+        # Verify recovery transitioned to success and prior error_reason was cleared to NULL
     enrichment_row = db.execute(text("SELECT status, error_reason FROM job_enrichments WHERE job_id = :id"), {"id": job_id}).fetchone()
     assert enrichment_row[0] == "success"
     assert enrichment_row[1] is None
@@ -445,8 +468,8 @@ def test_js_fallback_interstitial_falls_to_snippet_without_mutating_description(
     """), {"src_id": src_id, "desc": initial_snippet}).scalar()
 
     db.execute(text("""
-        INSERT INTO job_enrichments (job_id, status, url, lease_token, lease_expires_at, attempts, created_at, updated_at)
-        VALUES (:id, 'in_progress', 'https://www.python.org/jobs/599', :token, NOW() + INTERVAL '1 hour', 0, NOW(), NOW())
+        INSERT INTO job_enrichments (job_id, status, url, lease_holder, lease_token, lease_expires_at, attempts, created_at, updated_at)
+        VALUES (:id, 'in_progress', 'https://www.python.org/jobs/599', 'test-worker', :token, NOW() + INTERVAL '1 hour', 0, NOW(), NOW())
     """), {"id": job_id, "token": token})
     db.commit()
 
@@ -509,8 +532,8 @@ def test_realistic_python_job_enriches_successfully_without_fallback_marker(mock
     """), {"src_id": src_id}).scalar()
 
     db.execute(text("""
-        INSERT INTO job_enrichments (job_id, status, url, lease_token, lease_expires_at, attempts, created_at, updated_at)
-        VALUES (:id, 'in_progress', 'https://example.com/careers/python-platform', :token, NOW() + INTERVAL '1 hour', 0, NOW(), NOW())
+        INSERT INTO job_enrichments (job_id, status, url, lease_holder, lease_token, lease_expires_at, attempts, created_at, updated_at)
+        VALUES (:id, 'in_progress', 'https://example.com/careers/python-platform', 'test-worker', :token, NOW() + INTERVAL '1 hour', 0, NOW(), NOW())
     """), {"id": job_id, "token": token})
     db.commit()
 
@@ -535,7 +558,10 @@ def test_realistic_python_job_enriches_successfully_without_fallback_marker(mock
 
         worker.process_job(db, job_id, "https://example.com/careers/python-platform", token)
 
-    # Verify job_enrichments transitioned to success
+        with patch("app.services.scraper.firecrawl.FirecrawlClient.scrape") as second_scrape:
+            EnrichmentWorker(max_attempts=3).claim_and_process(db)
+            second_scrape.assert_not_called()
+        # Verify recovery transitioned to success
     enrichment_row = db.execute(text("SELECT status, error_reason FROM job_enrichments WHERE job_id = :id"), {"id": job_id}).fetchone()
     assert enrichment_row[0] == "success"
     assert enrichment_row[1] is None

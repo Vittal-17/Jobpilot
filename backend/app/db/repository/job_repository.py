@@ -8,6 +8,7 @@ from app.db.models.job_enrichment import JobEnrichmentModel
 import hashlib
 import re
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
+from app.services.job_url_classifier import classify_job_url
 
 def normalize_text(text: str | None) -> str:
     if not text:
@@ -29,7 +30,7 @@ def normalize_url(url_str: str | None) -> str | None:
         q_params = parse_qsl(parsed.query, keep_blank_values=True)
         filtered_params = [
             (k, v) for k, v in q_params
-            if not k.lower().startswith('utm_') and k.lower() not in ('gclid', 'fbclid', 'msclkid', 'mc_eid')
+            if not k.lower().startswith('utm_') and k.lower() not in ('gclid', 'fbclid', 'msclkid', 'mc_eid', '_src', 'trk')
         ]
         filtered_params.sort(key=lambda x: (x[0], x[1]))
         new_query = urlencode(filtered_params)
@@ -48,9 +49,14 @@ def normalize_url(url_str: str | None) -> str | None:
 def compute_canonical_hash(job: PydanticJob) -> str | None:
     url_norm = normalize_url(str(job.url) if job.url else None)
     if url_norm:
-        return hashlib.sha256(f"URL|{url_norm}".encode('utf-8')).hexdigest()
+        is_job_specific, _ = classify_job_url(url_norm, job.title)
+        if is_job_specific:
+            return hashlib.sha256(f"URL|{url_norm}".encode('utf-8')).hexdigest()
 
     company_norm = normalize_text(job.company)
+    # Provider placeholders must never merge otherwise unrelated postings.
+    if company_norm in {"unknown", "unknown company", "n a", "na", "none", "confidential"}:
+        company_norm = ""
     title_norm = normalize_text(job.title)
     loc_norm = normalize_text(job.location)
 

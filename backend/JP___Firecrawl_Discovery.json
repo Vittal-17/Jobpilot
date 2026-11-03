@@ -27,7 +27,9 @@
           "url": "http://fastapi:8000/ingestion/internal/firecrawl-discovery/plan",
           "authentication": "predefinedCredentialType",
           "nodeCredentialType": "httpHeaderAuth",
-          "sendBody": false
+          "sendBody": true,
+          "specifyBody": "json",
+          "jsonBody": "={ \"run_id\": \"{{ $execution.id }}\" }"
         },
         "id": "node-plan",
         "name": "Plan Queries",
@@ -100,7 +102,7 @@
       },
       {
         "parameters": {
-          "jsCode": "const input = $input.first().json;\nreturn {\n  json: {\n    status: input.status || 'unknown',\n    query_count: input.query_count || 0,\n    attempted_queries: input.attempted_queries || 0,\n    successful_queries: input.successful_queries || 0,\n    candidates_found: input.candidates_found || 0,\n    candidates_accepted: input.candidates_accepted || 0,\n    candidates_rejected: input.candidates_rejected || 0,\n    ingestion: input.ingestion || { created: 0, duplicates: 0, invalid: 0, failed: 0 },\n    credits_consumed: input.credits_consumed || 0,\n    credits_reserved: input.credits_reserved !== undefined ? input.credits_reserved : (input.credits_consumed || 0),\n    estimated_credits: input.estimated_credits || 0\n  }\n};"
+          "jsCode": "const input = $input.first().json;\nreturn {\n  json: {\n    run_id: input.run_id || null,\n    status: input.status || 'unknown',\n    query_count: input.query_count || 0,\n    attempted_queries: input.attempted_queries || 0,\n    successful_queries: input.successful_queries || 0,\n    candidates_found: input.candidates_found || 0,\n    candidates_accepted: input.candidates_accepted || 0,\n    candidates_rejected: input.candidates_rejected || 0,\n    ingestion: input.ingestion || { created: 0, duplicates: 0, invalid: 0, failed: 0 },\n    credits_consumed: input.credits_consumed || 0,\n    credits_reserved: input.credits_reserved !== undefined ? input.credits_reserved : (input.credits_consumed || 0),\n    estimated_credits: input.estimated_credits || 0\n  }\n};"
         },
         "id": "node-telemetry",
         "name": "Execution Telemetry",

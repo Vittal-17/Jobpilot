@@ -191,6 +191,43 @@ def test_ingest_firecrawl_endpoint_success():
         assert data["created"] == 1
 
 
+def test_ingest_firecrawl_idempotency_key_conflict_does_not_mutate_state():
+    headers = {
+        "X-Api-Key": settings.api_secret_key,
+        "Idempotency-Key": "api-idempotency-conflict",
+    }
+    mock_job = Job(
+        title="Idempotency Engineer",
+        company="Conflict Corp",
+        source="firecrawl",
+        source_job_id="idempotency-conflict-job",
+        url="https://example.com/job/idempotency-conflict-job",
+        location="Bengaluru",
+        discovered_at=datetime.now(timezone.utc),
+    )
+    with SessionLocal() as db:
+        before_jobs = db.execute(text("SELECT COUNT(*) FROM jobs")).scalar_one()
+    with patch("app.api.endpoints.ingestion.create_provider") as mock_create:
+        provider = MagicMock()
+        provider.search_jobs.return_value = [mock_job]
+        mock_create.return_value = provider
+        first = client.post(
+            "/ingestion/firecrawl",
+            headers=headers,
+            json={"keywords": "Python", "location": "Bengaluru", "page_size": 10},
+        )
+        second = client.post(
+            "/ingestion/firecrawl",
+            headers=headers,
+            json={"keywords": "Django", "location": "Bengaluru", "page_size": 10},
+        )
+    assert first.status_code == 200, first.text
+    assert second.status_code == 409, second.text
+    provider.search_jobs.assert_called_once()
+    with SessionLocal() as db:
+        assert db.execute(text("SELECT COUNT(*) FROM jobs")).scalar_one() == before_jobs + 1
+
+
 def test_ingest_firecrawl_endpoint_quota_exhausted():
     headers = {"X-Api-Key": settings.api_secret_key}
     db = SessionLocal()

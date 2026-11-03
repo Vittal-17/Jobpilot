@@ -81,8 +81,11 @@ def engine():
     alembic_cfg.set_main_option("sqlalchemy.url", TEST_DATABASE_URL)
     alembic_cfg.set_main_option("script_location", "backend/alembic")
 
-    # Drop all tables manually just in case to start clean
-    Base.metadata.drop_all(bind=engine)
+    # Register every model before teardown so metadata owns the complete
+    # schema.  A single check-first drop is idempotent; avoid dropping a
+    # table explicitly and then asking metadata to drop the same Table object.
+    import app.db.models  # noqa: F401
+    Base.metadata.drop_all(bind=engine, checkfirst=True)
     with engine.begin() as conn:
         conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
 

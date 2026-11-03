@@ -24,6 +24,8 @@ class SearchExecutionModel(Base):
 
     selected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    ownership_token: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    ownership_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 
     jobs_fetched: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -40,6 +42,7 @@ class SearchExecutionModel(Base):
         Index("idx_search_execution_candidate", "candidate_id"),
         Index("idx_search_execution_cycle", "cycle_id"),
         Index("idx_search_execution_status", "status"),
+        Index("ix_search_execution_ownership_expires_at", "ownership_expires_at"),
         Index(
             "uq_active_claim",
             "candidate_id",

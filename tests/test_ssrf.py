@@ -42,7 +42,7 @@ def test_fetch_rejects_oversized_response():
         # mock context manager
         mock_stream.return_value.__enter__.return_value = mock_response
 
-        with patch.object(client, "_resolve_and_validate"):
+        with patch.object(client, "_resolve_and_validate", return_value=["93.184.216.34"]):
             with pytest.raises(SSRFViolation, match="Response too large"):
                 client.fetch("http://safe.com")
 
@@ -59,9 +59,7 @@ def test_fetch_rejects_redirect_to_private():
 
         mock_stream.return_value.__enter__.return_value = mock_resp1
 
-        with patch.object(client, "_resolve_and_validate") as mock_resolve:
-            # We want _resolve_and_validate to actually run to catch the bad IP
-            mock_resolve.side_effect = SSRFClient()._resolve_and_validate
+        with patch.object(client, "_resolve_and_validate", return_value=["93.184.216.34"]):
             with pytest.raises(SSRFViolation, match="Blocked metadata service IP"):
                 client.fetch("http://safe.com")
 
@@ -81,7 +79,7 @@ def test_fetch_catches_dns_rebinding_post_connect():
 
         mock_stream.return_value.__enter__.return_value = mock_response
 
-        with patch.object(client, "_resolve_and_validate"):
+        with patch.object(client, "_resolve_and_validate", return_value=["93.184.216.34"]):
             # Initial DNS mock passes, but post-connect check should fail
             with pytest.raises(SSRFViolation, match="Blocked metadata service IP"):
                 client.fetch("http://safe.com")
@@ -98,7 +96,7 @@ def test_fetch_rejects_invalid_content_type():
 
         mock_stream.return_value.__enter__.return_value = mock_response
 
-        with patch.object(client, "_resolve_and_validate"):
+        with patch.object(client, "_resolve_and_validate", return_value=["93.184.216.34"]):
             with pytest.raises(SSRFViolation, match="Blocked content type: application/json"):
                 client.fetch("http://safe.com")
 
@@ -116,7 +114,7 @@ def test_fetch_returns_usable_body():
 
         mock_stream.return_value.__enter__.return_value = mock_response
 
-        with patch.object(client, "_resolve_and_validate"):
+        with patch.object(client, "_resolve_and_validate", return_value=["93.184.216.34"]):
             response = client.fetch("http://safe.com")
 
             # Assert the body is fully readable without StreamConsumed errors

@@ -11,6 +11,9 @@ from app.services.firecrawl_quota import get_firecrawl_budget_state
 
 
 def clear_firecrawl_usage(db):
+    db.execute(text("DELETE FROM firecrawl_operations"))
+    db.execute(text("DELETE FROM provider_reservations"))
+    db.execute(text("DELETE FROM firecrawl_budget_state"))
     db.execute(text("DELETE FROM provider_usage WHERE provider_name IN ('firecrawl', 'firecrawl_monthly')"))
     db.commit()
 

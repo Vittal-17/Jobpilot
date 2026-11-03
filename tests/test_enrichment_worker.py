@@ -105,6 +105,7 @@ def test_enrichment_worker_stale_lease(db_session):
         job_id=job.id,
         status='in_progress',
         url=job.url,
+        lease_holder="test-worker",
         lease_token="expired_token",
         lease_expires_at=datetime.now(timezone.utc) - timedelta(minutes=10)
     )
@@ -135,6 +136,7 @@ def test_enrichment_worker_reclamation(db_session):
         job_id=job.id,
         status='in_progress',
         url=job.url,
+        lease_holder="old-worker",
         lease_token="old_token",
         lease_expires_at=datetime.now(timezone.utc) - timedelta(minutes=10)
     )
@@ -202,7 +204,10 @@ def test_enqueue_job_enrichment_conflict_safe_idempotent(db_session):
 
     # Simulate transition to in_progress
     enr1.status = "in_progress"
-    db_session.flush()
+    enr1.lease_holder = "test-worker"
+    enr1.lease_token = "test-token"
+    enr1.lease_expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+    db_session.commit()
 
     # Second enqueue on the same job_id (conflict path)
     # Must be conflict-safe/idempotent and not raise or overwrite in-progress status
@@ -212,6 +217,9 @@ def test_enqueue_job_enrichment_conflict_safe_idempotent(db_session):
     assert len(enrichments) == 1
     assert enrichments[0].status == "in_progress"
     assert enrichments[0].url == "https://example.com/initial"
+    assert enrichments[0].lease_holder == "test-worker"
+    assert enrichments[0].lease_token == "test-token"
+    assert enrichments[0].lease_expires_at is not None
 
 def test_enqueue_preserves_first_discoverer_lineage(db_session):
     """The first-discoverer contract: a deduplicated job must NOT receive a new
@@ -314,17 +322,24 @@ def test_enrichment_worker_snippet_fallback(db_session):
 
     # We need to simulate leasing so the token matches
     enrichment.status = "in_progress"
+    enrichment.lease_holder = worker.worker_id
     enrichment.lease_token = "test-token"
     db_session.execute(text("UPDATE job_enrichments SET lease_expires_at = clock_timestamp() + interval '5 minutes' WHERE job_id = 9999"))
-    db_session.flush()
+    # process_job enforces the canonical live-lease fence.  The lease must be
+    # durable before handing it to a worker, not merely visible in this session.
+    db_session.commit()
 
     # Process job
     worker.process_job(db_session, job_id=9999, url="http://example.com/job", token="test-token")
+    db_session.commit()
 
     # Verify fallback behavior
     updated_enrichment = db_session.query(JobEnrichmentModel).filter_by(job_id=9999).first()
     assert updated_enrichment.status == "unsupported"
     assert updated_enrichment.error_reason == "Blocked by Cloudflare"
+    assert updated_enrichment.lease_holder is None
+    assert updated_enrichment.lease_token is None
+    assert updated_enrichment.lease_expires_at is None
 
 def test_enrichment_worker_snippet_fallback_positive(db_session):
     # Ensure there is a user to match with
@@ -364,15 +379,22 @@ def test_enrichment_worker_snippet_fallback_positive(db_session):
     worker.ssrf_client.fetch.side_effect = SSRFViolation("Blocked by Cloudflare")
 
     enrichment.status = "in_progress"
+    enrichment.lease_holder = worker.worker_id
     enrichment.lease_token = "test-token"
     db_session.execute(text("UPDATE job_enrichments SET lease_expires_at = clock_timestamp() + interval '5 minutes' WHERE job_id = :jid"), {"jid": job.id})
-    db_session.flush()
+    db_session.commit()
 
     worker.process_job(db_session, job_id=job.id, url="http://example.com/job2", token="test-token")
+    db_session.commit()
 
     # Because title="Junior Software Engineer" and description_is_snippet=True, it should pass eligibility and create a recommendation
     from app.db.models.recommendation_history import RecommendationHistoryModel
     rec = db_session.query(RecommendationHistoryModel).filter_by(job_id=job.id).first()
+    updated_enrichment = db_session.query(JobEnrichmentModel).filter_by(job_id=job.id).one()
+    assert updated_enrichment.status == "unsupported"
+    assert updated_enrichment.lease_holder is None
+    assert updated_enrichment.lease_token is None
+    assert updated_enrichment.lease_expires_at is None
     assert rec is not None
     assert rec.score is not None
     assert rec.score >= 50
@@ -395,11 +417,17 @@ def test_enrichment_worker_snippet_fallback_extraction_error(db_session):
     )
     db_session.add(job)
     db_session.flush()
-    enrichment = JobEnrichmentModel(job_id=9998, status="in_progress", url="http://example.com/job3", lease_token="test-token")
+    enrichment = JobEnrichmentModel(
+        job_id=9998,
+        status="in_progress",
+        url="http://example.com/job3",
+        lease_holder="test-worker",
+        lease_token="test-token",
+    )
     db_session.add(enrichment)
     db_session.flush()
     db_session.execute(text("UPDATE job_enrichments SET lease_expires_at = clock_timestamp() + interval '5 minutes' WHERE job_id = 9998"))
-    db_session.flush()
+    db_session.commit()
 
     worker = EnrichmentWorker(worker_id="test-worker")
     worker.ssrf_client = MagicMock()
@@ -412,9 +440,13 @@ def test_enrichment_worker_snippet_fallback_extraction_error(db_session):
          patch("app.core.config.settings.firecrawl_enabled", False):
         worker.process_job(db_session, job_id=9998, url="http://example.com/job3", token="test-token")
 
+    db_session.commit()
     updated = db_session.query(JobEnrichmentModel).filter_by(job_id=9998).first()
     assert updated.status == "unsupported"
     assert "Failed to find description div" in updated.error_reason
+    assert updated.lease_holder is None
+    assert updated.lease_token is None
+    assert updated.lease_expires_at is None
 
 def test_enrichment_worker_snippet_fallback_exception_handling(db_session):
     # If the fallback itself crashes, it must record a failure instead of being left in_progress
@@ -432,11 +464,18 @@ def test_enrichment_worker_snippet_fallback_exception_handling(db_session):
     )
     db_session.add(job)
     db_session.flush()
-    enrichment = JobEnrichmentModel(job_id=9997, status="in_progress", url="http://example.com/job4", lease_token="test-token", attempts=0)
+    enrichment = JobEnrichmentModel(
+        job_id=9997,
+        status="in_progress",
+        url="http://example.com/job4",
+        lease_holder="test-worker",
+        lease_token="test-token",
+        attempts=0,
+    )
     db_session.add(enrichment)
     db_session.flush()
     db_session.execute(text("UPDATE job_enrichments SET lease_expires_at = clock_timestamp() + interval '5 minutes' WHERE job_id = 9997"))
-    db_session.flush()
+    db_session.commit()
 
     worker = EnrichmentWorker(worker_id="test-worker", max_attempts=3)
     worker.ssrf_client = MagicMock()
@@ -447,10 +486,14 @@ def test_enrichment_worker_snippet_fallback_exception_handling(db_session):
         with patch.object(db_session, 'rollback'):
             worker.process_job(db_session, job_id=9997, url="http://example.com/job4", token="test-token")
 
+    db_session.commit()
     db_session.expire_all()
     updated = db_session.query(JobEnrichmentModel).filter_by(job_id=9997).first()
     assert updated.status == "retry"
     assert "Fallback failed" in updated.error_reason
+    assert updated.lease_holder is None
+    assert updated.lease_token is None
+    assert updated.lease_expires_at is None
 
 
 def test_enrichment_worker_recommendation_conflict_safe(db_session, mock_ssrf):
@@ -489,13 +532,14 @@ def test_enrichment_worker_recommendation_conflict_safe(db_session, mock_ssrf):
         job_id=job.id,
         status='in_progress',
         url=job.url,
+        lease_holder="test-worker",
         lease_token="test-token"
     )
     db_session.add(enrichment)
     db_session.execute(text("UPDATE job_enrichments SET lease_expires_at = clock_timestamp() + interval '5 minutes' WHERE job_id = :jid"), {"jid": job.id})
-    db_session.flush()
+    db_session.commit()
 
-    worker = EnrichmentWorker()
+    worker = EnrichmentWorker(worker_id="test-worker")
     worker.complete_success(db_session, job.id, "test-token", job.description)
 
     recs = db_session.query(RecommendationHistoryModel).filter_by(job_id=job.id).all()

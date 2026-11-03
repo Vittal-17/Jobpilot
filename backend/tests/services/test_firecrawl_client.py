@@ -25,7 +25,8 @@ def test_firecrawl_client_payload():
         "url": "http://example.com",
         "formats": ["markdown"],
         "onlyMainContent": True,
-        "timeout": 30000
+        "parsers": [],
+        "timeout": 30000,
     }
 
 @respx.mock
@@ -133,17 +134,19 @@ def test_firecrawl_client_search_empty_results():
     )
     assert client.search("query 2") == []
 
-    # data is None
+    # data=None is a malformed envelope, not a successful empty result.
     respx.post("https://api.firecrawl.dev/v2/search").mock(
         return_value=httpx.Response(200, json={"success": True, "data": None})
     )
-    assert client.search("query 3") == []
+    with pytest.raises(FirecrawlPayloadError, match="neither a list nor a dictionary"):
+        client.search("query 3")
 
-    # data key missing entirely
+    # data key missing entirely is also malformed.
     respx.post("https://api.firecrawl.dev/v2/search").mock(
         return_value=httpx.Response(200, json={"success": True})
     )
-    assert client.search("query 4") == []
+    with pytest.raises(FirecrawlPayloadError, match="missing 'data'"):
+        client.search("query 4")
 
 
 @respx.mock
@@ -205,3 +208,37 @@ def test_firecrawl_client_search_success_false():
 
     with pytest.raises(FirecrawlPayloadError, match="Firecrawl search failed"):
         client.search("test")
+
+
+@respx.mock
+def test_firecrawl_client_search_with_freshness_country_and_location():
+    import json
+    client = FirecrawlClient("test-key")
+    route = respx.post("https://api.firecrawl.dev/v2/search").mock(
+        return_value=httpx.Response(200, json={"success": True, "data": []})
+    )
+
+    client.search(
+        query="Python Developer",
+        limit=10,
+        tbs="qdr:m",
+        country="in",
+        location="Bengaluru",
+    )
+
+    assert route.called
+    sent_payload = json.loads(route.calls.last.request.content)
+    assert sent_payload["query"] == "Python Developer"
+    assert sent_payload["limit"] == 10
+    assert sent_payload["tbs"] == "qdr:m"
+    assert sent_payload["country"] == "in"
+    assert sent_payload["location"] == "Bengaluru"
+
+    route = respx.post("https://api.firecrawl.dev/v2/search").mock(
+        return_value=httpx.Response(200, json={"success": True, "data": []})
+    )
+    client.search("Python Developer", limit=10, tbs="  ", country="", location="  ")
+    sent_payload = json.loads(route.calls.last.request.content)
+    assert "tbs" not in sent_payload
+    assert "country" not in sent_payload
+    assert "location" not in sent_payload

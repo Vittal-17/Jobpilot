@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     firecrawl_discovery_max_results_per_query: int = 10
     firecrawl_discovery_max_credits_per_run: int = 20
     firecrawl_enrichment_max_credits_per_run: int = 10
+    firecrawl_discovery_freshness: str = "qdr:m"
+    firecrawl_discovery_country: str = "in"
 
     @field_validator('api_secret_key')
     @classmethod
@@ -55,6 +57,22 @@ class Settings(BaseSettings):
             unsafe_keys = {"your_strong_internal_api_secret_key_here", "dev_secret_key_1234567"}
             if v in unsafe_keys:
                 raise ValueError("API_SECRET_KEY must not be a known unsafe default in production.")
+        return v
+
+    @field_validator('firecrawl_discovery_freshness')
+    @classmethod
+    def validate_firecrawl_freshness(cls, v: str) -> str:
+        v = v.strip()
+        if not v or len(v) > 32 or not v.startswith('qdr:'):
+            raise ValueError("firecrawl_discovery_freshness must be a qdr: value")
+        return v
+
+    @field_validator('firecrawl_discovery_country')
+    @classmethod
+    def validate_firecrawl_country(cls, v: str) -> str:
+        v = v.strip().lower()
+        if len(v) != 2 or not v.isalpha():
+            raise ValueError("firecrawl_discovery_country must be a two-letter country code")
         return v
 
     model_config = SettingsConfigDict(env_file=_env_path, env_file_encoding="utf-8", extra="ignore")

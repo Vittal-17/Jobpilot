@@ -1,5 +1,5 @@
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from unittest.mock import MagicMock, patch
 from sqlalchemy import text
 from app.db.models.job import JobModel
@@ -183,7 +183,15 @@ def test_async_enrichment_telemetry_retry_no_double_credit(db_session, monkeypat
 
         db_session.add(JobModel(id=2007, title="Data Engineer", company="C", source="test", source_job_id="T2007", discovered_at=now, description_is_snippet=True, url="http://test"))
         db_session.flush()
-        db_session.add(JobEnrichmentModel(job_id=2007, status="pending", url="http://test", source_execution_id=exec_id))
+        db_session.add(JobEnrichmentModel(
+            job_id=2007,
+            status="in_progress",
+            url="http://test",
+            source_execution_id=exec_id,
+            lease_holder="test-worker",
+            lease_token="claimed-token",
+            lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        ))
         db_session.commit()
 
         worker = EnrichmentWorker()
@@ -196,7 +204,14 @@ def test_async_enrichment_telemetry_retry_no_double_credit(db_session, monkeypat
         assert ex.jobs_fresher_eligible == 0 # no token match
 
         # claim it
-        db_session.execute(text("UPDATE job_enrichments SET status = 'in_progress', lease_token = 'token', lease_expires_at = clock_timestamp() + interval '5 min' WHERE job_id = 2007"))
+        db_session.execute(text("""
+            UPDATE job_enrichments
+            SET status = 'in_progress',
+                lease_holder = 'test-worker',
+                lease_token = 'token',
+                lease_expires_at = clock_timestamp() + interval '5 min'
+            WHERE job_id = 2007
+        """))
         db_session.commit()
 
         worker.complete_success(db_session, 2007, "token", VALID_DESC, exec_id)

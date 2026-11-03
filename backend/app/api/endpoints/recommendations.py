@@ -3,8 +3,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, func
 
 from app.db.database import get_db
+from app.api.deps import get_current_user
 from app.db.models.job import JobModel
 from app.db.models.recommendation_history import RecommendationHistoryModel
+from app.db.models.user import User
 from app.schemas.match import PaginatedRecommendedJobResponse, RecommendedJobResponse, MatchResult, MatchReason
 
 router = APIRouter()
@@ -13,13 +15,19 @@ router = APIRouter()
 def list_recommendations(
     page: int = Query(1, ge=1),
     size: int = Query(20, ge=1, le=100),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     offset = (page - 1) * size
 
     base_query = (
         select(RecommendationHistoryModel, JobModel)
         .join(JobModel, RecommendationHistoryModel.job_id == JobModel.id)
+        .join(User, RecommendationHistoryModel.user_id == User.id)
+        .where(
+            User.is_active.is_(True),
+            RecommendationHistoryModel.user_id == current_user.id,
+        )
     )
 
     total = db.scalar(select(func.count()).select_from(base_query.subquery())) or 0

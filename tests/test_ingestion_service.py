@@ -15,14 +15,16 @@ class DummyProvider:
 def test_ingestion_service_success_and_duplicates(db_session: Session):
     now = datetime.now(timezone.utc)
     job1 = Job(
-        title="J1", company="C1", source="adzuna", source_job_id="1", discovered_at=now
+        title="J1", company="C1", source="adzuna", source_job_id="1", discovered_at=now,
+        location="Bengaluru",
     )
     job2 = Job(
-        title="J2", company="C2", source="adzuna", source_job_id="2", discovered_at=now
+        title="J2", company="C2", source="adzuna", source_job_id="2", discovered_at=now,
+        location="Bengaluru",
     )
 
     provider = DummyProvider([job1, job2])
-    query = JobSearchQuery(keywords="t", location="t")
+    query = JobSearchQuery(keywords="t", location="Bengaluru")
 
     result, _ = run_ingestion(db_session, "adzuna", provider, query)
     assert result.fetched == 2

@@ -10,6 +10,7 @@ def test_search_cycle_workflow_contract():
     nodes = {node["name"]: node for node in workflow["nodes"]}
 
     assert "Loop" in nodes
+    assert nodes["Loop"]["type"] == "n8n-nodes-base.code"
     assert "Select Next" in nodes
     assert "Action Check" in nodes
     assert "Execute" in nodes
@@ -34,7 +35,7 @@ def test_search_cycle_workflow_contract():
     connections = workflow["connections"]
     assert connections["Action Check"]["main"][0][0]["node"] == "Execute"
     assert connections["Action Check"]["main"][1][0]["node"] == "Stop"
-    assert connections["Execute"]["main"][0][0]["node"] == "Loop"
+    assert connections["Execute"]["main"][0][0]["node"] == "Select Next"
 
     serialized = json.dumps(workflow).lower()
     assert "adzuna_app_key" not in serialized
@@ -60,6 +61,7 @@ def test_notifications_workflow_contract():
     assert "Mark Send Started" in nodes
     assert "Check Send Authorized" in nodes
     assert "Send Telegram" in nodes
+    assert "Check Telegram Success" in nodes
     assert "Acknowledge Delivery" in nodes
     assert "Verify Acknowledgement" in nodes
     assert "Definitive Failure Check" in nodes
@@ -149,8 +151,10 @@ def test_notifications_workflow_contract():
     assert connections["Check Send Authorized"]["main"][0][0]["node"] == "Send Telegram"
     assert len(connections["Check Send Authorized"]["main"]) == 2
     assert len(connections["Check Send Authorized"]["main"][1]) == 0  # unauthorized stops
-    assert connections["Send Telegram"]["main"][0][0]["node"] == "Acknowledge Delivery"
+    assert connections["Send Telegram"]["main"][0][0]["node"] == "Check Telegram Success"
     assert connections["Send Telegram"]["main"][1][0]["node"] == "Definitive Failure Check"
+    assert connections["Check Telegram Success"]["main"][0][0]["node"] == "Acknowledge Delivery"
+    assert connections["Check Telegram Success"]["main"][1][0]["node"] == "Definitive Failure Check"
     assert connections["Definitive Failure Check"]["main"][0][0]["node"] == "Fail Delivery"
     assert connections["Acknowledge Delivery"]["main"][0][0]["node"] == "Verify Acknowledgement"
 
@@ -211,54 +215,48 @@ def test_notifications_workflow_escaping():
         Path(temp_path).unlink()
 
 def test_telegram_node_contract():
-    import json
-    from pathlib import Path
     workflows = json.loads(Path("backend/JP___Notifications.json").read_text(encoding="utf-8"))
     workflow = workflows[0]
-    nodes = workflow.get("nodes", [])
+    nodes = {node["name"]: node for node in workflow["nodes"]}
+    telegram = nodes["Send Telegram"]
+    success = nodes["Check Telegram Success"]
 
-    telegram_nodes = [n for n in nodes if n.get("type") == "n8n-nodes-base.telegram"]
-    assert len(telegram_nodes) == 1, "Expected exactly one Telegram node"
-    t_node = telegram_nodes[0]
+    # Telegram delivery is an explicit HTTP request, not an n8n native
+    # Telegram node.  Full responses are retained so HTTP status is part of
+    # the semantic success contract.
+    assert telegram["type"] == "n8n-nodes-base.httpRequest"
+    params = telegram["parameters"]
+    assert params["method"] == "POST"
+    assert params["authentication"] == "none"
+    assert "TELEGRAM_BOT_TOKEN" in params["url"]
+    assert "TELEGRAM_CHAT_ID" in params["jsonBody"]
+    assert "parse_mode: 'HTML'" in params["jsonBody"]
+    response = params["options"]["response"]["response"]
+    assert response["fullResponse"] is True
+    assert response["neverError"] is True
+    assert telegram.get("retryOnFail") is not True
 
-    # Verify runtime variable wiring and no hardcoded chat ID
-    params = t_node.get("parameters", {})
-    assert params.get("chatId") == "={{ $env.TELEGRAM_CHAT_ID }}", "chatId must be dynamically wired to environment"
-    assert params.get("additionalFields", {}).get("parse_mode") == "HTML", "Telegram node must strictly configure parse_mode=HTML inside additionalFields"
+    assert success["type"] == "n8n-nodes-base.if"
+    success_condition = success["parameters"]["conditions"]["conditions"][0]
+    success_expression = success_condition["leftValue"]
+    assert "statusCode >= 200" in success_expression
+    assert "statusCode < 300" in success_expression
+    assert success_condition["rightValue"] is True
 
-    # Verify no hardcoded token in the file
+    # A malformed, non-2xx, or transport outcome never authorizes an ack;
+    # it follows the durable unknown/definitive-failure handling path.
+    assert "definitive" in nodes["Definitive Failure Check"]["parameters"]["jsCode"]
+    assert "outcome unknown" in nodes["Definitive Failure Check"]["parameters"]["jsCode"]
+    connections = workflow["connections"]
+    assert connections["Send Telegram"]["main"][0][0]["node"] == "Check Telegram Success"
+    assert connections["Send Telegram"]["main"][1][0]["node"] == "Definitive Failure Check"
+    assert connections["Check Telegram Success"]["main"][0][0]["node"] == "Acknowledge Delivery"
+    assert connections["Check Telegram Success"]["main"][1][0]["node"] == "Definitive Failure Check"
+    assert connections["Definitive Failure Check"]["main"][0][0]["node"] == "Fail Delivery"
+
     workflow_str = json.dumps(workflow)
     import re
-    # Match common telegram bot token format (e.g. 123456789:ABCDefGHIJK...)
     assert not re.search(r'\d{8,10}:[a-zA-Z0-9_-]{35}', workflow_str), "Workflow contains a hardcoded Telegram bot token!"
-
-    # Verify no-retry behavior on Telegram node
-    retry_settings = t_node.get("retryOnFail", False)
-    assert retry_settings is False, "Telegram node MUST NOT automatically retry to preserve at-most-once delivery"
-
-    # Verify connectivity: Claim -> Format -> Mark Send Started -> Telegram -> Ack
-    # We trace connections from the JSON
-    connections = workflow.get("connections", {})
-
-    # 'Format Payload' -> 'Mark Send Started'
-    format_conn = connections.get("Format Payload", {}).get("main", [])
-    assert any(c.get("node") == "Mark Send Started" for c in format_conn[0]), "Format Payload must connect to Mark Send Started"
-
-    # 'Mark Send Started' -> 'Check Send Authorized' -> 'Send Telegram'
-    start_conn = connections.get("Mark Send Started", {}).get("main", [])
-    assert any(c.get("node") == "Check Send Authorized" for c in start_conn[0]), "Mark Send Started must connect to Check Send Authorized"
-
-    auth_conn = connections.get("Check Send Authorized", {}).get("main", [])
-    assert any(c.get("node") == "Send Telegram" for c in auth_conn[0]), "Check Send Authorized must connect to Send Telegram"
-
-    # 'Send Telegram' -> 'Acknowledge Delivery' (main[0]) and 'Definitive Failure Check' (main[1])
-    t_conn = connections.get("Send Telegram", {}).get("main", [])
-    assert any(c.get("node") == "Acknowledge Delivery" for c in t_conn[0]), "Send Telegram must connect to Acknowledge Delivery"
-    assert any(c.get("node") == "Definitive Failure Check" for c in t_conn[1]), "Send Telegram error output must connect to Definitive Failure Check"
-
-    # Acknowledge Delivery -> Verify Acknowledgement
-    ack_conn = connections.get("Acknowledge Delivery", {}).get("main", [])
-    assert any(c.get("node") == "Verify Acknowledgement" for c in ack_conn[0]), "Acknowledge Delivery must connect to Verify Acknowledgement"
 
 def test_notifications_workflow_condition_evaluation():
     import subprocess
@@ -411,8 +409,8 @@ def test_definitive_failure_filter_evaluation():
     }}
 
     console.log(JSON.stringify({{
-        bad_request: run({{ error: {{ httpCode: "400", message: "Bad Request: chat not found" }} }}),
-        forbidden: run({{ error: {{ httpCode: "403", message: "Forbidden: bot was blocked by the user" }} }}),
+        bad_request: run({{ error: {{ httpCode: "400", response: {{ body: {{ ok: false, error_code: 400, description: "Bad Request: chat not found" }} }} }} }}),
+        forbidden: run({{ error: {{ httpCode: "403", response: {{ body: {{ ok: false, error_code: 403, description: "Forbidden: bot was blocked by the user" }} }} }} }}),
         timeout: run({{ error: {{ httpCode: "504", message: "Gateway Timeout" }} }}),
         network: run({{ error: {{ message: "ECONNRESET" }} }})
     }}));
@@ -430,9 +428,14 @@ def test_definitive_failure_filter_evaluation():
         assert output["bad_request"][0]["json"]["definitive"] is True
         assert len(output["forbidden"]) == 1
         assert output["forbidden"][0]["json"]["definitive"] is True
-        # Ambiguous errors return empty array to prevent release
-        assert len(output["timeout"]) == 0
-        assert len(output["network"]) == 0
+        # Ambiguous errors remain durably represented as unknown; callers
+        # must not treat an empty branch as permission to acknowledge/retry.
+        assert len(output["timeout"]) == 1
+        assert output["timeout"][0]["json"]["definitive"] is False
+        assert "unknown" in output["timeout"][0]["json"]["reason"].lower()
+        assert len(output["network"]) == 1
+        assert output["network"][0]["json"]["definitive"] is False
+        assert "unknown" in output["network"][0]["json"]["reason"].lower()
     finally:
         Path(temp_path).unlink()
 
